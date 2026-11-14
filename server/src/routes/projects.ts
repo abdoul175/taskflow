@@ -44,12 +44,12 @@ const updateProjectSchema = z
     message: 'Nothing to update.',
   });
 
-projectsRouter.get('/', (req, res) => {
-  const rows = db.prepare(projectSelect).all(req.user!.id) as ProjectRow[];
+projectsRouter.get('/', async (req, res) => {
+  const rows = await db.all<ProjectRow>(projectSelect, [req.user!.id]);
   res.json({ projects: rows.map(toProject) });
 });
 
-projectsRouter.post('/', (req, res) => {
+projectsRouter.post('/', async (req, res) => {
   const parsed = createProjectSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Invalid input.' });
@@ -67,23 +67,25 @@ projectsRouter.post('/', (req, res) => {
     open_task_count: 0,
   };
 
-  db.prepare(
+  await db.run(
     'INSERT INTO projects (id, user_id, name, color, created_at) VALUES (?, ?, ?, ?, ?)',
-  ).run(row.id, row.user_id, row.name, row.color, row.created_at);
+    [row.id, row.user_id, row.name, row.color, row.created_at],
+  );
 
   res.status(201).json({ project: toProject(row) });
 });
 
-projectsRouter.patch('/:id', (req, res) => {
+projectsRouter.patch('/:id', async (req, res) => {
   const parsed = updateProjectSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Invalid input.' });
     return;
   }
 
-  const existing = db
-    .prepare('SELECT id FROM projects WHERE id = ? AND user_id = ?')
-    .get(req.params.id, req.user!.id) as { id: string } | undefined;
+  const existing = await db.get<{ id: string }>(
+    'SELECT id FROM projects WHERE id = ? AND user_id = ?',
+    [req.params.id, req.user!.id],
+  );
 
   if (!existing) {
     res.status(404).json({ error: 'Project not found.' });
@@ -102,39 +104,39 @@ projectsRouter.patch('/:id', (req, res) => {
     values.push(parsed.data.color);
   }
 
-  db.prepare(`UPDATE projects SET ${updates.join(', ')} WHERE id = ? AND user_id = ?`).run(
-    ...values,
-    req.params.id,
-    req.user!.id,
+  await db.run(
+    `UPDATE projects SET ${updates.join(', ')} WHERE id = ? AND user_id = ?`,
+    [...values, req.params.id, req.user!.id],
   );
 
-  const row = db
-    .prepare(
-      `SELECT p.*, COUNT(t.id) AS task_count,
-              COALESCE(SUM(CASE WHEN t.status != 'done' THEN 1 ELSE 0 END), 0) AS open_task_count
-       FROM projects p
-       LEFT JOIN tasks t ON t.project_id = p.id AND t.user_id = p.user_id
-       WHERE p.id = ? AND p.user_id = ?
-       GROUP BY p.id`,
-    )
-    .get(req.params.id, req.user!.id) as ProjectRow;
+  const row = await db.get<ProjectRow>(
+    `SELECT p.*, COUNT(t.id) AS task_count,
+            COALESCE(SUM(CASE WHEN t.status != 'done' THEN 1 ELSE 0 END), 0) AS open_task_count
+     FROM projects p
+     LEFT JOIN tasks t ON t.project_id = p.id AND t.user_id = p.user_id
+     WHERE p.id = ? AND p.user_id = ?
+     GROUP BY p.id`,
+    [req.params.id, req.user!.id],
+  );
 
-  res.json({ project: toProject(row) });
+  res.json({ project: toProject(row!) });
 });
 
-projectsRouter.delete('/:id', (req, res) => {
-  const count = db
-    .prepare('SELECT COUNT(*) AS count FROM projects WHERE user_id = ?')
-    .get(req.user!.id) as { count: number };
+projectsRouter.delete('/:id', async (req, res) => {
+  const count = await db.get<{ count: number }>(
+    'SELECT COUNT(*)::int AS count FROM projects WHERE user_id = ?',
+    [req.user!.id],
+  );
 
-  if (count.count <= 1) {
+  if (Number(count?.count ?? 0) <= 1) {
     res.status(400).json({ error: 'You need at least one project.' });
     return;
   }
 
-  const result = db
-    .prepare('DELETE FROM projects WHERE id = ? AND user_id = ?')
-    .run(req.params.id, req.user!.id);
+  const result = await db.run(
+    'DELETE FROM projects WHERE id = ? AND user_id = ?',
+    [req.params.id, req.user!.id],
+  );
 
   if (result.changes === 0) {
     res.status(404).json({ error: 'Project not found.' });

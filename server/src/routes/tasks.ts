@@ -57,35 +57,38 @@ const taskSelect = `
   JOIN projects p ON p.id = t.project_id
 `;
 
-function ownsProject(userId: string, projectId: string): boolean {
-  return Boolean(
-    db
-      .prepare('SELECT id FROM projects WHERE id = ? AND user_id = ?')
-      .get(projectId, userId),
+async function ownsProject(userId: string, projectId: string): Promise<boolean> {
+  const row = await db.get<{ id: string }>(
+    'SELECT id FROM projects WHERE id = ? AND user_id = ?',
+    [projectId, userId],
   );
+  return Boolean(row);
 }
 
-function getTask(userId: string, taskId: string): TaskRow | undefined {
-  return db
-    .prepare(`${taskSelect} WHERE t.id = ? AND t.user_id = ?`)
-    .get(taskId, userId) as TaskRow | undefined;
+async function getTask(userId: string, taskId: string): Promise<TaskRow | undefined> {
+  return db.get<TaskRow>(`${taskSelect} WHERE t.id = ? AND t.user_id = ?`, [
+    taskId,
+    userId,
+  ]);
 }
 
-tasksRouter.get('/', (req, res) => {
+tasksRouter.get('/', async (req, res) => {
   const projectId = typeof req.query.projectId === 'string' ? req.query.projectId : undefined;
 
   const rows = projectId
-    ? (db
-        .prepare(`${taskSelect} WHERE t.user_id = ? AND t.project_id = ? ORDER BY t.created_at DESC`)
-        .all(req.user!.id, projectId) as TaskRow[])
-    : (db
-        .prepare(`${taskSelect} WHERE t.user_id = ? ORDER BY t.created_at DESC`)
-        .all(req.user!.id) as TaskRow[]);
+    ? await db.all<TaskRow>(
+        `${taskSelect} WHERE t.user_id = ? AND t.project_id = ? ORDER BY t.created_at DESC`,
+        [req.user!.id, projectId],
+      )
+    : await db.all<TaskRow>(
+        `${taskSelect} WHERE t.user_id = ? ORDER BY t.created_at DESC`,
+        [req.user!.id],
+      );
 
   res.json({ tasks: rows.map(toTask) });
 });
 
-tasksRouter.post('/', (req, res) => {
+tasksRouter.post('/', async (req, res) => {
   const parsed = createTaskSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Invalid input.' });
@@ -94,7 +97,7 @@ tasksRouter.post('/', (req, res) => {
 
   const { projectId, title, description, status, priority, dueDate } = parsed.data;
 
-  if (!ownsProject(req.user!.id, projectId)) {
+  if (!(await ownsProject(req.user!.id, projectId))) {
     res.status(404).json({ error: 'Project not found.' });
     return;
   }
@@ -102,34 +105,35 @@ tasksRouter.post('/', (req, res) => {
   const now = new Date().toISOString();
   const id = newId();
 
-  db.prepare(
+  await db.run(
     `INSERT INTO tasks
        (id, user_id, project_id, title, description, status, priority, due_date, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
-    id,
-    req.user!.id,
-    projectId,
-    title,
-    description,
-    status,
-    priority,
-    dueDate,
-    now,
-    now,
+    [
+      id,
+      req.user!.id,
+      projectId,
+      title,
+      description,
+      status,
+      priority,
+      dueDate,
+      now,
+      now,
+    ],
   );
 
-  res.status(201).json({ task: toTask(getTask(req.user!.id, id)!) });
+  res.status(201).json({ task: toTask((await getTask(req.user!.id, id))!) });
 });
 
-tasksRouter.patch('/:id', (req, res) => {
+tasksRouter.patch('/:id', async (req, res) => {
   const parsed = updateTaskSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Invalid input.' });
     return;
   }
 
-  const existing = getTask(req.user!.id, req.params.id);
+  const existing = await getTask(req.user!.id, req.params.id);
   if (!existing) {
     res.status(404).json({ error: 'Task not found.' });
     return;
@@ -137,7 +141,7 @@ tasksRouter.patch('/:id', (req, res) => {
 
   const data = parsed.data;
 
-  if (data.projectId && !ownsProject(req.user!.id, data.projectId)) {
+  if (data.projectId && !(await ownsProject(req.user!.id, data.projectId))) {
     res.status(404).json({ error: 'Project not found.' });
     return;
   }
@@ -173,17 +177,19 @@ tasksRouter.patch('/:id', (req, res) => {
   updates.push('updated_at = ?');
   values.push(new Date().toISOString());
 
-  db.prepare(
+  await db.run(
     `UPDATE tasks SET ${updates.join(', ')} WHERE id = ? AND user_id = ?`,
-  ).run(...values, req.params.id, req.user!.id);
+    [...values, req.params.id, req.user!.id],
+  );
 
-  res.json({ task: toTask(getTask(req.user!.id, req.params.id)!) });
+  res.json({ task: toTask((await getTask(req.user!.id, req.params.id))!) });
 });
 
-tasksRouter.delete('/:id', (req, res) => {
-  const result = db
-    .prepare('DELETE FROM tasks WHERE id = ? AND user_id = ?')
-    .run(req.params.id, req.user!.id);
+tasksRouter.delete('/:id', async (req, res) => {
+  const result = await db.run(
+    'DELETE FROM tasks WHERE id = ? AND user_id = ?',
+    [req.params.id, req.user!.id],
+  );
 
   if (result.changes === 0) {
     res.status(404).json({ error: 'Task not found.' });

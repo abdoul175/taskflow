@@ -2,7 +2,7 @@ import type { RequestHandler } from 'express';
 import { config } from '../config.js';
 import { findSessionUser } from '../lib/session.js';
 
-export const requireAuth: RequestHandler = (req, res, next) => {
+export const requireAuth: RequestHandler = async (req, res, next) => {
   const token = req.cookies?.[config.cookieName] as string | undefined;
 
   if (!token) {
@@ -10,13 +10,19 @@ export const requireAuth: RequestHandler = (req, res, next) => {
     return;
   }
 
-  const user = findSessionUser(token);
-  if (!user) {
-    res.status(401).json({ error: 'Your session expired. Please sign in again.' });
-    return;
-  }
+  try {
+    const user = await findSessionUser(token);
+    if (!user) {
+      res
+        .status(401)
+        .json({ error: 'Your session expired. Please sign in again.' });
+      return;
+    }
 
-  req.user = user;
-  req.sessionToken = token;
-  next();
+    req.user = user;
+    req.sessionToken = token;
+    next();
+  } catch (error) {
+    next(error);
+  }
 };

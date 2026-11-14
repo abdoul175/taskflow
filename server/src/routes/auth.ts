@@ -13,7 +13,7 @@ import {
   emailPreviewMode,
   googleOAuthEnabled,
 } from '../config.js';
-import { db, newId } from '../db.js';
+import { db, newId, type Statement } from '../db.js';
 import { hashPassword, verifyPassword } from '../lib/password.js';
 import { sendMail } from '../lib/mailer.js';
 import {
@@ -194,18 +194,16 @@ function isUniqueViolation(error: unknown): boolean {
     typeof error === 'object' &&
     error !== null &&
     'code' in error &&
-    String((error as { code: unknown }).code).includes('SQLITE_CONSTRAINT')
+    (error as { code: unknown }).code === '23505'
   );
 }
 
-function getUserRow(id: string): UserRow | undefined {
-  return db.prepare('SELECT * FROM users WHERE id = ?').get(id) as
-    | UserRow
-    | undefined;
+async function getUserRow(id: string): Promise<UserRow | undefined> {
+  return db.get<UserRow>('SELECT * FROM users WHERE id = ?', [id]);
 }
 
-function startSession(res: Response, userId: string): void {
-  const token = createSession(userId);
+async function startSession(res: Response, userId: string): Promise<void> {
+  const token = await createSession(userId);
   res.cookie(config.cookieName, token, sessionCookieOptions);
 }
 
@@ -256,7 +254,7 @@ async function issueVerificationCode(user: UserRow): Promise<string> {
   const code = numericCode(6);
   const now = new Date();
 
-  db.prepare(
+  await db.run(
     `INSERT INTO email_verification_tokens (user_id, code_hash, attempts, expires_at, created_at)
      VALUES (?, ?, 0, ?, ?)
      ON CONFLICT(user_id) DO UPDATE SET
@@ -264,11 +262,12 @@ async function issueVerificationCode(user: UserRow): Promise<string> {
        attempts = 0,
        expires_at = excluded.expires_at,
        created_at = excluded.created_at`,
-  ).run(
-    user.id,
-    hashSecret(code),
-    new Date(now.getTime() + EMAIL_CODE_TTL_MS).toISOString(),
-    now.toISOString(),
+    [
+      user.id,
+      hashSecret(code),
+      new Date(now.getTime() + EMAIL_CODE_TTL_MS).toISOString(),
+      now.toISOString(),
+    ],
   );
 
   try {
@@ -293,32 +292,30 @@ function normalizeRecoveryCode(code: string): string {
   return code.replace(/[^a-z0-9]/gi, '').toUpperCase();
 }
 
-function issueRecoveryCodes(userId: string): string[] {
+async function issueRecoveryCodes(userId: string): Promise<string[]> {
   const codes = Array.from({ length: RECOVERY_CODE_COUNT }, () => recoveryCode());
   const now = new Date().toISOString();
 
-  db.transaction(() => {
-    db.prepare('DELETE FROM recovery_codes WHERE user_id = ?').run(userId);
-    const insert = db.prepare(
-      'INSERT INTO recovery_codes (id, user_id, code_hash, used_at, created_at) VALUES (?, ?, ?, NULL, ?)',
-    );
-    for (const code of codes) {
-      insert.run(newId(), userId, hashSecret(normalizeRecoveryCode(code)), now);
-    }
-  })();
+  const statements: Statement[] = [
+    { sql: 'DELETE FROM recovery_codes WHERE user_id = ?', params: [userId] },
+    ...codes.map((code) => ({
+      sql: 'INSERT INTO recovery_codes (id, user_id, code_hash, used_at, created_at) VALUES (?, ?, ?, NULL, ?)',
+      params: [newId(), userId, hashSecret(normalizeRecoveryCode(code)), now],
+    })),
+  ];
 
+  await db.transaction(statements);
   return codes;
 }
 
-function consumeRecoveryCode(userId: string, code: string): boolean {
+async function consumeRecoveryCode(userId: string, code: string): Promise<boolean> {
   const normalized = normalizeRecoveryCode(code);
   if (normalized.length !== 10) return false;
 
-  const candidates = db
-    .prepare(
-      'SELECT id, code_hash FROM recovery_codes WHERE user_id = ? AND used_at IS NULL',
-    )
-    .all(userId) as { id: string; code_hash: string }[];
+  const candidates = await db.all<{ id: string; code_hash: string }>(
+    'SELECT id, code_hash FROM recovery_codes WHERE user_id = ? AND used_at IS NULL',
+    [userId],
+  );
 
   const targetHash = hashSecret(normalized);
   const match = candidates.find((candidate) =>
@@ -327,15 +324,15 @@ function consumeRecoveryCode(userId: string, code: string): boolean {
 
   if (!match) return false;
 
-  db.prepare('UPDATE recovery_codes SET used_at = ? WHERE id = ?').run(
+  await db.run('UPDATE recovery_codes SET used_at = ? WHERE id = ?', [
     new Date().toISOString(),
     match.id,
-  );
+  ]);
   return true;
 }
 
 /** Accepts either a TOTP code or a single-use recovery code. */
-function verifySecondFactor(user: UserRow, code: string): boolean {
+async function verifySecondFactor(user: UserRow, code: string): Promise<boolean> {
   if (user.totp_secret) {
     const result = verifyTotp(user.totp_secret, code);
     if (result) {
@@ -345,10 +342,10 @@ function verifySecondFactor(user: UserRow, code: string): boolean {
       ) {
         return false;
       }
-      db.prepare('UPDATE users SET totp_last_step = ? WHERE id = ?').run(
+      await db.run('UPDATE users SET totp_last_step = ? WHERE id = ?', [
         result.step,
         user.id,
-      );
+      ]);
       return true;
     }
   }
@@ -356,21 +353,22 @@ function verifySecondFactor(user: UserRow, code: string): boolean {
   return consumeRecoveryCode(user.id, code);
 }
 
-function createLoginChallenge(userId: string): string {
+async function createLoginChallenge(userId: string): Promise<string> {
   const token = randomToken();
   const now = Date.now();
 
-  db.transaction(() => {
-    db.prepare('DELETE FROM login_challenges WHERE user_id = ?').run(userId);
-    db.prepare(
-      'INSERT INTO login_challenges (id, user_id, attempts, expires_at, created_at) VALUES (?, ?, 0, ?, ?)',
-    ).run(
-      hashSecret(token),
-      userId,
-      new Date(now + LOGIN_CHALLENGE_TTL_MS).toISOString(),
-      new Date(now).toISOString(),
-    );
-  })();
+  await db.transaction([
+    { sql: 'DELETE FROM login_challenges WHERE user_id = ?', params: [userId] },
+    {
+      sql: 'INSERT INTO login_challenges (id, user_id, attempts, expires_at, created_at) VALUES (?, ?, 0, ?, ?)',
+      params: [
+        hashSecret(token),
+        userId,
+        new Date(now + LOGIN_CHALLENGE_TTL_MS).toISOString(),
+        new Date(now).toISOString(),
+      ],
+    },
+  ]);
 
   return token;
 }
@@ -518,22 +516,24 @@ authRouter.get('/google/callback', authLimiter, async (req, res) => {
       email.split('@')[0] ||
       'Taskflow user';
 
-    let user = db
-      .prepare('SELECT * FROM users WHERE google_id = ?')
-      .get(profile.sub) as UserRow | undefined;
+    let user = await db.get<UserRow>(
+      'SELECT * FROM users WHERE google_id = ?',
+      [profile.sub],
+    );
 
     if (user) {
       if (user.name !== displayName) {
-        db.prepare('UPDATE users SET name = ? WHERE id = ?').run(
+        await db.run('UPDATE users SET name = ? WHERE id = ?', [
           displayName,
           user.id,
-        );
-        user = getUserRow(user.id)!;
+        ]);
+        user = (await getUserRow(user.id))!;
       }
     } else {
-      const existing = db
-        .prepare('SELECT * FROM users WHERE email = ?')
-        .get(email) as UserRow | undefined;
+      const existing = await db.get<UserRow>(
+        'SELECT * FROM users WHERE email = ?',
+        [email],
+      );
 
       if (existing) {
         if (existing.google_id && existing.google_id !== profile.sub) {
@@ -546,48 +546,51 @@ authRouter.get('/google/callback', authLimiter, async (req, res) => {
           ? await hashPassword(randomToken())
           : existing.password_hash;
 
-        db.transaction(() => {
-          db.prepare(
-            'UPDATE users SET google_id = ?, email_verified = 1, password_hash = ? WHERE id = ?',
-          ).run(profile.sub, passwordHash, existing.id);
+        const statements: Statement[] = [
+          {
+            sql: 'UPDATE users SET google_id = ?, email_verified = 1, password_hash = ? WHERE id = ?',
+            params: [profile.sub, passwordHash, existing.id],
+          },
+        ];
 
-          if (wasUnverified) {
-            // Google has now proven ownership of an address that was only
-            // pre-registered. Invalidate the old password and sessions.
-            db.prepare('DELETE FROM sessions WHERE user_id = ?').run(existing.id);
-            db.prepare('DELETE FROM login_challenges WHERE user_id = ?').run(
-              existing.id,
-            );
-            db.prepare(
-              'DELETE FROM email_verification_tokens WHERE user_id = ?',
-            ).run(existing.id);
-          }
-        })();
+        if (wasUnverified) {
+          // Google has now proven ownership of an address that was only
+          // pre-registered. Invalidate the old password and sessions.
+          statements.push(
+            {
+              sql: 'DELETE FROM sessions WHERE user_id = ?',
+              params: [existing.id],
+            },
+            {
+              sql: 'DELETE FROM login_challenges WHERE user_id = ?',
+              params: [existing.id],
+            },
+            {
+              sql: 'DELETE FROM email_verification_tokens WHERE user_id = ?',
+              params: [existing.id],
+            },
+          );
+        }
 
-        user = getUserRow(existing.id)!;
+        await db.transaction(statements);
+        user = (await getUserRow(existing.id))!;
       } else {
         const passwordHash = await hashPassword(randomToken());
         const userId = newId();
         const now = new Date().toISOString();
 
         try {
-          db.transaction(() => {
-            db.prepare(
-              `INSERT INTO users (id, name, email, password_hash, google_id, email_verified, created_at)
-               VALUES (?, ?, ?, ?, ?, 1, ?)`,
-            ).run(
-              userId,
-              displayName,
-              email,
-              passwordHash,
-              profile.sub,
-              now,
-            );
-
-            db.prepare(
-              'INSERT INTO projects (id, user_id, name, color, created_at) VALUES (?, ?, ?, ?, ?)',
-            ).run(newId(), userId, 'Personal', '#6366f1', now);
-          })();
+          await db.transaction([
+            {
+              sql: `INSERT INTO users (id, name, email, password_hash, google_id, email_verified, created_at)
+                    VALUES (?, ?, ?, ?, ?, 1, ?)`,
+              params: [userId, displayName, email, passwordHash, profile.sub, now],
+            },
+            {
+              sql: 'INSERT INTO projects (id, user_id, name, color, created_at) VALUES (?, ?, ?, ?, ?)',
+              params: [newId(), userId, 'Personal', '#6366f1', now],
+            },
+          ]);
         } catch (error) {
           if (isUniqueViolation(error)) {
             fail('link-conflict');
@@ -596,7 +599,7 @@ authRouter.get('/google/callback', authLimiter, async (req, res) => {
           throw error;
         }
 
-        user = getUserRow(userId)!;
+        user = (await getUserRow(userId))!;
       }
     }
 
@@ -609,7 +612,7 @@ authRouter.get('/google/callback', authLimiter, async (req, res) => {
     clearLoginChallengeCookie(res);
 
     if (user.totp_enabled === 1) {
-      const challengeToken = createLoginChallenge(user.id);
+      const challengeToken = await createLoginChallenge(user.id);
       res.cookie(
         LOGIN_CHALLENGE_COOKIE,
         challengeToken,
@@ -619,7 +622,7 @@ authRouter.get('/google/callback', authLimiter, async (req, res) => {
       return;
     }
 
-    startSession(res, user.id);
+    await startSession(res, user.id);
     res.redirect('/');
   } catch (error) {
     console.error('Google sign-in failed:', error);
@@ -636,9 +639,10 @@ authRouter.post('/register', authLimiter, emailLimiter, async (req, res) => {
 
   const { name, email, password } = parsed.data;
 
-  const existing = db
-    .prepare('SELECT id FROM users WHERE email = ?')
-    .get(email) as { id: string } | undefined;
+  const existing = await db.get<{ id: string }>(
+    'SELECT id FROM users WHERE email = ?',
+    [email],
+  );
 
   if (existing) {
     res.status(409).json({ error: 'An account with that email already exists.' });
@@ -650,16 +654,17 @@ authRouter.post('/register', authLimiter, emailLimiter, async (req, res) => {
   const now = new Date().toISOString();
 
   try {
-    db.transaction(() => {
-      db.prepare(
-        `INSERT INTO users (id, name, email, password_hash, email_verified, created_at)
-         VALUES (?, ?, ?, ?, 0, ?)`,
-      ).run(userId, name, email, passwordHash, now);
-
-      db.prepare(
-        'INSERT INTO projects (id, user_id, name, color, created_at) VALUES (?, ?, ?, ?, ?)',
-      ).run(newId(), userId, 'Personal', '#6366f1', now);
-    })();
+    await db.transaction([
+      {
+        sql: `INSERT INTO users (id, name, email, password_hash, email_verified, created_at)
+              VALUES (?, ?, ?, ?, 0, ?)`,
+        params: [userId, name, email, passwordHash, now],
+      },
+      {
+        sql: 'INSERT INTO projects (id, user_id, name, color, created_at) VALUES (?, ?, ?, ?, ?)',
+        params: [newId(), userId, 'Personal', '#6366f1', now],
+      },
+    ]);
   } catch (error) {
     if (isUniqueViolation(error)) {
       res.status(409).json({ error: 'An account with that email already exists.' });
@@ -668,7 +673,7 @@ authRouter.post('/register', authLimiter, emailLimiter, async (req, res) => {
     throw error;
   }
 
-  const user = getUserRow(userId)!;
+  const user = (await getUserRow(userId))!;
   const code = await issueVerificationCode(user);
 
   res.status(201).json({
@@ -678,7 +683,7 @@ authRouter.post('/register', authLimiter, emailLimiter, async (req, res) => {
   });
 });
 
-authRouter.post('/verify-email', authLimiter, (req, res) => {
+authRouter.post('/verify-email', authLimiter, async (req, res) => {
   const parsed = verifyEmailSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Invalid input.' });
@@ -686,9 +691,9 @@ authRouter.post('/verify-email', authLimiter, (req, res) => {
   }
 
   const { email, code } = parsed.data;
-  const user = db
-    .prepare('SELECT * FROM users WHERE email = ?')
-    .get(email) as UserRow | undefined;
+  const user = await db.get<UserRow>('SELECT * FROM users WHERE email = ?', [
+    email,
+  ]);
 
   if (!user) {
     res.status(400).json({ error: 'That code is invalid or has expired.' });
@@ -700,16 +705,16 @@ authRouter.post('/verify-email', authLimiter, (req, res) => {
     return;
   }
 
-  const token = db
-    .prepare('SELECT * FROM email_verification_tokens WHERE user_id = ?')
-    .get(user.id) as
-    | { code_hash: string; attempts: number; expires_at: string }
-    | undefined;
+  const token = await db.get<{
+    code_hash: string;
+    attempts: number;
+    expires_at: string;
+  }>('SELECT * FROM email_verification_tokens WHERE user_id = ?', [user.id]);
 
   if (!token || new Date(token.expires_at).getTime() <= Date.now()) {
-    db.prepare('DELETE FROM email_verification_tokens WHERE user_id = ?').run(
+    await db.run('DELETE FROM email_verification_tokens WHERE user_id = ?', [
       user.id,
-    );
+    ]);
     res.status(400).json({
       error: 'That code is invalid or has expired. Request a new code.',
     });
@@ -717,9 +722,9 @@ authRouter.post('/verify-email', authLimiter, (req, res) => {
   }
 
   if (token.attempts >= MAX_CODE_ATTEMPTS) {
-    db.prepare('DELETE FROM email_verification_tokens WHERE user_id = ?').run(
+    await db.run('DELETE FROM email_verification_tokens WHERE user_id = ?', [
       user.id,
-    );
+    ]);
     res.status(400).json({
       error: 'Too many attempts. Request a new verification code.',
     });
@@ -727,21 +732,23 @@ authRouter.post('/verify-email', authLimiter, (req, res) => {
   }
 
   if (!safeEqual(token.code_hash, hashSecret(code))) {
-    db.prepare(
+    await db.run(
       'UPDATE email_verification_tokens SET attempts = attempts + 1 WHERE user_id = ?',
-    ).run(user.id);
+      [user.id],
+    );
     res.status(400).json({ error: 'That code is invalid or has expired.' });
     return;
   }
 
-  db.transaction(() => {
-    db.prepare('UPDATE users SET email_verified = 1 WHERE id = ?').run(user.id);
-    db.prepare('DELETE FROM email_verification_tokens WHERE user_id = ?').run(
-      user.id,
-    );
-  })();
+  await db.transaction([
+    { sql: 'UPDATE users SET email_verified = 1 WHERE id = ?', params: [user.id] },
+    {
+      sql: 'DELETE FROM email_verification_tokens WHERE user_id = ?',
+      params: [user.id],
+    },
+  ]);
 
-  startSession(res, user.id);
+  await startSession(res, user.id);
   res.json({ user: toPublicUser({ ...user, email_verified: 1 }) });
 });
 
@@ -755,9 +762,10 @@ authRouter.post(
       return;
     }
 
-    const user = db
-      .prepare('SELECT * FROM users WHERE email = ?')
-      .get(parsed.data.email) as UserRow | undefined;
+    const user = await db.get<UserRow>(
+      'SELECT * FROM users WHERE email = ?',
+      [parsed.data.email],
+    );
 
     let devCode: string | undefined;
     if (user && user.email_verified === 0) {
@@ -782,9 +790,9 @@ authRouter.post('/login', authLimiter, async (req, res) => {
   }
 
   const { email, password } = parsed.data;
-  const user = db
-    .prepare('SELECT * FROM users WHERE email = ?')
-    .get(email) as UserRow | undefined;
+  const user = await db.get<UserRow>('SELECT * FROM users WHERE email = ?', [
+    email,
+  ]);
 
   const passwordMatches = await verifyPassword(
     password,
@@ -808,16 +816,16 @@ authRouter.post('/login', authLimiter, async (req, res) => {
   if (user.totp_enabled === 1) {
     res.json({
       requires2fa: true,
-      challengeToken: createLoginChallenge(user.id),
+      challengeToken: await createLoginChallenge(user.id),
     });
     return;
   }
 
-  startSession(res, user.id);
+  await startSession(res, user.id);
   res.json({ user: toPublicUser(user) });
 });
 
-authRouter.post('/login/2fa', authLimiter, (req, res) => {
+authRouter.post('/login/2fa', authLimiter, async (req, res) => {
   const parsed = twoFactorLoginSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Invalid input.' });
@@ -839,11 +847,12 @@ authRouter.post('/login/2fa', authLimiter, (req, res) => {
   }
 
   const challengeId = hashSecret(challengeToken);
-  const challenge = db
-    .prepare('SELECT * FROM login_challenges WHERE id = ?')
-    .get(challengeId) as
-    | { id: string; user_id: string; attempts: number; expires_at: string }
-    | undefined;
+  const challenge = await db.get<{
+    id: string;
+    user_id: string;
+    attempts: number;
+    expires_at: string;
+  }>('SELECT * FROM login_challenges WHERE id = ?', [challengeId]);
 
   if (!challenge) {
     clearLoginChallengeCookie(res);
@@ -854,7 +863,7 @@ authRouter.post('/login/2fa', authLimiter, (req, res) => {
   }
 
   if (new Date(challenge.expires_at).getTime() <= Date.now()) {
-    db.prepare('DELETE FROM login_challenges WHERE id = ?').run(challenge.id);
+    await db.run('DELETE FROM login_challenges WHERE id = ?', [challenge.id]);
     clearLoginChallengeCookie(res);
     res.status(401).json({
       error: 'This sign-in attempt expired. Please sign in again.',
@@ -862,9 +871,9 @@ authRouter.post('/login/2fa', authLimiter, (req, res) => {
     return;
   }
 
-  const user = getUserRow(challenge.user_id);
+  const user = await getUserRow(challenge.user_id);
   if (!user || user.totp_enabled !== 1) {
-    db.prepare('DELETE FROM login_challenges WHERE id = ?').run(challenge.id);
+    await db.run('DELETE FROM login_challenges WHERE id = ?', [challenge.id]);
     clearLoginChallengeCookie(res);
     res.status(401).json({
       error: 'This sign-in attempt expired. Please sign in again.',
@@ -872,27 +881,27 @@ authRouter.post('/login/2fa', authLimiter, (req, res) => {
     return;
   }
 
-  if (!verifySecondFactor(user, code)) {
+  if (!(await verifySecondFactor(user, code))) {
     const attempts = challenge.attempts + 1;
     if (attempts >= MAX_CODE_ATTEMPTS) {
-      db.prepare('DELETE FROM login_challenges WHERE id = ?').run(challenge.id);
+      await db.run('DELETE FROM login_challenges WHERE id = ?', [challenge.id]);
       clearLoginChallengeCookie(res);
       res.status(401).json({
         error: 'Too many incorrect codes. Please sign in again.',
       });
     } else {
-      db.prepare('UPDATE login_challenges SET attempts = ? WHERE id = ?').run(
+      await db.run('UPDATE login_challenges SET attempts = ? WHERE id = ?', [
         attempts,
         challenge.id,
-      );
+      ]);
       res.status(401).json({ error: 'That authentication code is incorrect.' });
     }
     return;
   }
 
-  db.prepare('DELETE FROM login_challenges WHERE id = ?').run(challenge.id);
+  await db.run('DELETE FROM login_challenges WHERE id = ?', [challenge.id]);
   clearLoginChallengeCookie(res);
-  startSession(res, user.id);
+  await startSession(res, user.id);
   res.json({ user: toPublicUser(user) });
 });
 
@@ -906,9 +915,9 @@ authRouter.post(
       return;
     }
 
-    const user = db
-      .prepare('SELECT * FROM users WHERE email = ?')
-      .get(parsed.data.email) as UserRow | undefined;
+    const user = await db.get<UserRow>('SELECT * FROM users WHERE email = ?', [
+      parsed.data.email,
+    ]);
 
     let devResetUrl: string | undefined;
 
@@ -916,19 +925,21 @@ authRouter.post(
       const token = randomToken();
       const now = new Date();
 
-      db.transaction(() => {
-        db.prepare('DELETE FROM password_reset_tokens WHERE user_id = ?').run(
-          user.id,
-        );
-        db.prepare(
-          'INSERT INTO password_reset_tokens (id, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)',
-        ).run(
-          hashSecret(token),
-          user.id,
-          new Date(now.getTime() + RESET_TOKEN_TTL_MS).toISOString(),
-          now.toISOString(),
-        );
-      })();
+      await db.transaction([
+        {
+          sql: 'DELETE FROM password_reset_tokens WHERE user_id = ?',
+          params: [user.id],
+        },
+        {
+          sql: 'INSERT INTO password_reset_tokens (id, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)',
+          params: [
+            hashSecret(token),
+            user.id,
+            new Date(now.getTime() + RESET_TOKEN_TTL_MS).toISOString(),
+            now.toISOString(),
+          ],
+        },
+      ]);
 
       const resetUrl = `${appOrigin(req)}/reset-password?token=${encodeURIComponent(token)}`;
 
@@ -969,15 +980,15 @@ authRouter.post('/reset-password', authLimiter, async (req, res) => {
 
   const { token, password } = parsed.data;
   const tokenId = hashSecret(token);
-  const row = db
-    .prepare('SELECT * FROM password_reset_tokens WHERE id = ?')
-    .get(tokenId) as
-    | { id: string; user_id: string; expires_at: string }
-    | undefined;
+  const row = await db.get<{
+    id: string;
+    user_id: string;
+    expires_at: string;
+  }>('SELECT * FROM password_reset_tokens WHERE id = ?', [tokenId]);
 
   if (!row || new Date(row.expires_at).getTime() <= Date.now()) {
     if (row) {
-      db.prepare('DELETE FROM password_reset_tokens WHERE id = ?').run(row.id);
+      await db.run('DELETE FROM password_reset_tokens WHERE id = ?', [row.id]);
     }
     res.status(400).json({
       error: 'This reset link is invalid or has expired. Request a new one.',
@@ -985,7 +996,7 @@ authRouter.post('/reset-password', authLimiter, async (req, res) => {
     return;
   }
 
-  const user = getUserRow(row.user_id);
+  const user = await getUserRow(row.user_id);
   if (!user) {
     res.status(400).json({
       error: 'This reset link is invalid or has expired. Request a new one.',
@@ -995,23 +1006,28 @@ authRouter.post('/reset-password', authLimiter, async (req, res) => {
 
   const passwordHash = await hashPassword(password);
 
-  db.transaction(() => {
-    db.prepare(
-      'UPDATE users SET password_hash = ?, email_verified = 1 WHERE id = ?',
-    ).run(passwordHash, user.id);
-    db.prepare('DELETE FROM password_reset_tokens WHERE user_id = ?').run(
-      user.id,
-    );
-    db.prepare('DELETE FROM sessions WHERE user_id = ?').run(user.id);
-    db.prepare('DELETE FROM login_challenges WHERE user_id = ?').run(user.id);
-  })();
+  await db.transaction([
+    {
+      sql: 'UPDATE users SET password_hash = ?, email_verified = 1 WHERE id = ?',
+      params: [passwordHash, user.id],
+    },
+    {
+      sql: 'DELETE FROM password_reset_tokens WHERE user_id = ?',
+      params: [user.id],
+    },
+    { sql: 'DELETE FROM sessions WHERE user_id = ?', params: [user.id] },
+    {
+      sql: 'DELETE FROM login_challenges WHERE user_id = ?',
+      params: [user.id],
+    },
+  ]);
 
   res.status(204).end();
 });
 
-authRouter.post('/logout', (req, res) => {
+authRouter.post('/logout', async (req, res) => {
   const token = req.cookies?.[config.cookieName] as string | undefined;
-  if (token) deleteSession(token);
+  if (token) await deleteSession(token);
 
   res.clearCookie(config.cookieName, clearedSessionCookieOptions);
   res.status(204).end();
@@ -1032,9 +1048,10 @@ authRouter.patch('/profile', requireAuth, emailLimiter, async (req, res) => {
   const currentUser = req.user!;
   const emailChanged = email !== currentUser.email.toLowerCase();
 
-  const existing = db
-    .prepare('SELECT id FROM users WHERE email = ? AND id <> ?')
-    .get(email, currentUser.id) as { id: string } | undefined;
+  const existing = await db.get<{ id: string }>(
+    'SELECT id FROM users WHERE email = ? AND id <> ?',
+    [email, currentUser.id],
+  );
 
   if (existing) {
     res.status(409).json({ error: 'An account with that email already exists.' });
@@ -1043,14 +1060,15 @@ authRouter.patch('/profile', requireAuth, emailLimiter, async (req, res) => {
 
   try {
     if (emailChanged) {
-      db.prepare(
+      await db.run(
         'UPDATE users SET name = ?, email = ?, email_verified = 0 WHERE id = ?',
-      ).run(name, email, currentUser.id);
+        [name, email, currentUser.id],
+      );
     } else {
-      db.prepare('UPDATE users SET name = ? WHERE id = ?').run(
+      await db.run('UPDATE users SET name = ? WHERE id = ?', [
         name,
         currentUser.id,
-      );
+      ]);
     }
   } catch (error) {
     if (isUniqueViolation(error)) {
@@ -1060,11 +1078,11 @@ authRouter.patch('/profile', requireAuth, emailLimiter, async (req, res) => {
     throw error;
   }
 
-  const row = getUserRow(currentUser.id)!;
+  const row = (await getUserRow(currentUser.id))!;
 
   if (emailChanged) {
     const code = await issueVerificationCode(row);
-    if (req.sessionToken) deleteOtherSessions(row.id, req.sessionToken);
+    if (req.sessionToken) await deleteOtherSessions(row.id, req.sessionToken);
 
     res.json({
       user: toPublicUser(row),
@@ -1091,7 +1109,7 @@ authRouter.post('/change-password', requireAuth, authLimiter, async (req, res) =
     return;
   }
 
-  const row = getUserRow(req.user!.id);
+  const row = await getUserRow(req.user!.id);
   if (!row) {
     res.status(401).json({ error: 'Please sign in to continue.' });
     return;
@@ -1104,19 +1122,19 @@ authRouter.post('/change-password', requireAuth, authLimiter, async (req, res) =
   }
 
   const passwordHash = await hashPassword(newPassword);
-  db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(
+  await db.run('UPDATE users SET password_hash = ? WHERE id = ?', [
     passwordHash,
     row.id,
-  );
+  ]);
 
   // Sign out every other device; the session that made this change stays valid.
-  if (req.sessionToken) deleteOtherSessions(row.id, req.sessionToken);
+  if (req.sessionToken) await deleteOtherSessions(row.id, req.sessionToken);
 
   res.status(204).end();
 });
 
 authRouter.post('/2fa/setup', requireAuth, async (req, res) => {
-  const row = getUserRow(req.user!.id);
+  const row = await getUserRow(req.user!.id);
   if (!row) {
     res.status(401).json({ error: 'Please sign in to continue.' });
     return;
@@ -1128,10 +1146,7 @@ authRouter.post('/2fa/setup', requireAuth, async (req, res) => {
   }
 
   const secret = createTotpSecret();
-  db.prepare('UPDATE users SET totp_secret = ? WHERE id = ?').run(
-    secret,
-    row.id,
-  );
+  await db.run('UPDATE users SET totp_secret = ? WHERE id = ?', [secret, row.id]);
 
   const otpauthUrl = totpProvisioningUri(secret, row.email);
   const qrDataUrl = await QRCode.toDataURL(otpauthUrl, {
@@ -1144,14 +1159,14 @@ authRouter.post('/2fa/setup', requireAuth, async (req, res) => {
   res.json({ secret, otpauthUrl, qrDataUrl });
 });
 
-authRouter.post('/2fa/enable', requireAuth, authLimiter, (req, res) => {
+authRouter.post('/2fa/enable', requireAuth, authLimiter, async (req, res) => {
   const parsed = twoFactorCodeSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Invalid input.' });
     return;
   }
 
-  const row = getUserRow(req.user!.id);
+  const row = await getUserRow(req.user!.id);
   if (!row) {
     res.status(401).json({ error: 'Please sign in to continue.' });
     return;
@@ -1177,12 +1192,13 @@ authRouter.post('/2fa/enable', requireAuth, authLimiter, (req, res) => {
     return;
   }
 
-  const codes = issueRecoveryCodes(row.id);
-  db.prepare(
+  const codes = await issueRecoveryCodes(row.id);
+  await db.run(
     'UPDATE users SET totp_enabled = 1, totp_last_step = ? WHERE id = ?',
-  ).run(result.step, row.id);
+    [result.step, row.id],
+  );
 
-  if (req.sessionToken) deleteOtherSessions(row.id, req.sessionToken);
+  if (req.sessionToken) await deleteOtherSessions(row.id, req.sessionToken);
 
   res.json({ recoveryCodes: codes });
 });
@@ -1194,7 +1210,7 @@ authRouter.post('/2fa/disable', requireAuth, authLimiter, async (req, res) => {
     return;
   }
 
-  const row = getUserRow(req.user!.id);
+  const row = await getUserRow(req.user!.id);
   if (!row) {
     res.status(401).json({ error: 'Please sign in to continue.' });
     return;
@@ -1214,20 +1230,24 @@ authRouter.post('/2fa/disable', requireAuth, authLimiter, async (req, res) => {
     return;
   }
 
-  if (!verifySecondFactor(row, parsed.data.code)) {
+  if (!(await verifySecondFactor(row, parsed.data.code))) {
     res.status(400).json({ error: 'That authentication code is incorrect.' });
     return;
   }
 
-  db.transaction(() => {
-    db.prepare(
-      'UPDATE users SET totp_enabled = 0, totp_secret = NULL, totp_last_step = NULL WHERE id = ?',
-    ).run(row.id);
-    db.prepare('DELETE FROM recovery_codes WHERE user_id = ?').run(row.id);
-    db.prepare('DELETE FROM login_challenges WHERE user_id = ?').run(row.id);
-  })();
+  await db.transaction([
+    {
+      sql: 'UPDATE users SET totp_enabled = 0, totp_secret = NULL, totp_last_step = NULL WHERE id = ?',
+      params: [row.id],
+    },
+    { sql: 'DELETE FROM recovery_codes WHERE user_id = ?', params: [row.id] },
+    {
+      sql: 'DELETE FROM login_challenges WHERE user_id = ?',
+      params: [row.id],
+    },
+  ]);
 
-  if (req.sessionToken) deleteOtherSessions(row.id, req.sessionToken);
+  if (req.sessionToken) await deleteOtherSessions(row.id, req.sessionToken);
 
   res.status(204).end();
 });

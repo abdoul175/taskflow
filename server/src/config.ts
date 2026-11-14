@@ -15,20 +15,40 @@ const smtpPort = Number(process.env.SMTP_PORT ?? 587);
 const googleClientId = process.env.GOOGLE_CLIENT_ID?.trim() ?? '';
 const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET?.trim() ?? '';
 
+/**
+ * Neon injects its connection string under several names depending on how the
+ * integration was installed. Accept all of them so the dashboard setup is
+ * forgiving.
+ */
+const databaseUrl =
+  process.env.DATABASE_URL?.trim() ||
+  process.env.POSTGRES_URL?.trim() ||
+  process.env.POSTGRES_PRISMA_URL?.trim() ||
+  '';
+
+const vercelHost =
+  process.env.VERCEL_PROJECT_PRODUCTION_URL?.trim() ||
+  process.env.VERCEL_URL?.trim() ||
+  '';
+
 export const config = {
   port: Number(process.env.PORT ?? 4000),
   isProduction,
   serverRoot,
-  /** Path to the SQLite database file. */
-  databasePath: process.env.DATABASE_PATH
-    ? path.resolve(process.env.DATABASE_PATH)
-    : path.join(serverRoot, 'data', 'taskflow.db'),
-  /** Built client assets, served by Express in production. */
-  clientDistPath: path.resolve(serverRoot, '..', 'client', 'dist'),
+  /** Neon/Postgres connection string. Empty means "use local PGlite". */
+  databaseUrl,
+  /** Directory used by the embedded local Postgres (PGlite). */
+  pgliteDataDir: process.env.PGLITE_DATA_DIR
+    ? path.resolve(process.env.PGLITE_DATA_DIR)
+    : path.join(serverRoot, 'data', 'pglite'),
+  /** Built client assets, served by Express outside Vercel. */
+  clientDistPath: path.resolve(serverRoot, '..', 'public'),
   /** Extra allowed browser origin, useful behind a reverse proxy. */
   appOrigin: process.env.APP_ORIGIN,
   /** Public app URL used in emails when the request origin is unavailable. */
-  appUrl: process.env.APP_URL?.replace(/\/$/, '') ?? '',
+  appUrl:
+    process.env.APP_URL?.replace(/\/$/, '') ??
+    (vercelHost ? `https://${vercelHost}` : ''),
   cookieName: 'taskflow_session',
   sessionTtlMs: 7 * 24 * 60 * 60 * 1000,
   cookieSecure: process.env.COOKIE_SECURE

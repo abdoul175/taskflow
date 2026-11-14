@@ -1,18 +1,20 @@
-import { db, newId } from './db.js';
+import { db, newId, type Statement } from './db.js';
 import { hashPassword } from './lib/password.js';
 
 const DEMO_EMAIL = 'demo@taskflow.dev';
 const DEMO_PASSWORD = 'taskflow123';
 
-const existing = db
-  .prepare('SELECT id FROM users WHERE email = ?')
-  .get(DEMO_EMAIL) as { id: string } | undefined;
+const existing = await db.get<{ id: string }>(
+  'SELECT id FROM users WHERE email = ?',
+  [DEMO_EMAIL],
+);
 
 if (existing) {
-  db.prepare('UPDATE users SET email_verified = 1 WHERE id = ?').run(existing.id);
+  await db.run('UPDATE users SET email_verified = 1 WHERE id = ?', [existing.id]);
   console.log('Demo account already exists — nothing to do.');
   console.log(`  Email:    ${DEMO_EMAIL}`);
   console.log(`  Password: ${DEMO_PASSWORD}`);
+  await db.close();
   process.exit(0);
 }
 
@@ -120,28 +122,27 @@ const tasks = [
   },
 ] as const;
 
-db.transaction(() => {
-  db.prepare(
-    'INSERT INTO users (id, name, email, password_hash, email_verified, created_at) VALUES (?, ?, ?, ?, 1, ?)',
-  ).run(userId, 'Demo User', DEMO_EMAIL, passwordHash, iso(now));
+const statements: Statement[] = [
+  {
+    sql: 'INSERT INTO users (id, name, email, password_hash, email_verified, created_at) VALUES (?, ?, ?, ?, 1, ?)',
+    params: [userId, 'Demo User', DEMO_EMAIL, passwordHash, iso(now)],
+  },
+];
 
-  const insertProject = db.prepare(
-    'INSERT INTO projects (id, user_id, name, color, created_at) VALUES (?, ?, ?, ?, ?)',
-  );
-
-  projects.forEach((project, index) => {
-    insertProject.run(project.id, userId, project.name, project.color, iso(now + index * 1000));
+projects.forEach((project, index) => {
+  statements.push({
+    sql: 'INSERT INTO projects (id, user_id, name, color, created_at) VALUES (?, ?, ?, ?, ?)',
+    params: [project.id, userId, project.name, project.color, iso(now + index * 1000)],
   });
+});
 
-  const insertTask = db.prepare(
-    `INSERT INTO tasks
+tasks.forEach((task, index) => {
+  const createdAt = iso(now - index * 60_000);
+  statements.push({
+    sql: `INSERT INTO tasks
        (id, user_id, project_id, title, description, status, priority, due_date, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  );
-
-  tasks.forEach((task, index) => {
-    const createdAt = iso(now - index * 60_000);
-    insertTask.run(
+    params: [
       newId(),
       userId,
       projects[task.project]!.id,
@@ -152,9 +153,12 @@ db.transaction(() => {
       task.dueDate,
       createdAt,
       createdAt,
-    );
+    ],
   });
-})();
+});
+
+await db.transaction(statements);
+await db.close();
 
 console.log('Seeded the demo account.');
 console.log(`  Email:    ${DEMO_EMAIL}`);

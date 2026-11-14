@@ -1,6 +1,8 @@
 node_modules/
 dist/
+public/
 server/data/
+.vercel/
 .env
 .env.local
 *.log
