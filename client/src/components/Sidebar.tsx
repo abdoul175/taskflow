@@ -1,4 +1,4 @@
-import { ListTodo, LogOut, Plus, Trash2 } from 'lucide-react';
+import { ListTodo, LogOut, Pencil, Plus, Trash2 } from 'lucide-react';
 import type { Project, User } from '../types';
 import { LogoMark } from './Logo';
 
@@ -10,6 +10,7 @@ interface SidebarProps {
   onSelectProject: (projectId: string | null) => void;
   onNewProject: () => void;
   onDeleteProject: (project: Project) => void;
+  onOpenProfile: () => void;
   onLogout: () => void;
 }
 
@@ -31,6 +32,7 @@ export function Sidebar({
   onSelectProject,
   onNewProject,
   onDeleteProject,
+  onOpenProfile,
   onLogout,
 }: SidebarProps) {
   const openTotal = projects.reduce(
@@ -142,14 +144,30 @@ export function Sidebar({
         </button>
       </nav>
 
-      <div className="mt-6 flex items-center gap-3 rounded-xl border border-white/[0.06] bg-white/[0.02] p-3">
-        <div className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-gradient-to-br from-indigo-500 to-sky-500 text-[11px] font-bold text-white">
-          {initials(user.name)}
-        </div>
-        <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-medium text-slate-200">{user.name}</p>
-          <p className="truncate text-xs text-slate-500">{user.email}</p>
-        </div>
+      <div className="mt-6 flex items-center gap-1.5 rounded-xl border border-white/[0.06] bg-white/[0.02] p-2">
+        <button
+          type="button"
+          onClick={onOpenProfile}
+          className="group flex min-w-0 flex-1 items-center gap-2.5 rounded-lg px-1.5 py-1.5 text-left transition hover:bg-white/[0.05] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/60"
+          title="Edit profile"
+        >
+          <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-gradient-to-br from-indigo-500 to-sky-500 text-[11px] font-bold text-white">
+            {initials(user.name)}
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-sm font-medium text-slate-200">
+              {user.name}
+            </span>
+            <span className="block truncate text-xs text-slate-500">
+              {user.email}
+            </span>
+          </span>
+          <Pencil
+            className="h-3.5 w-3.5 shrink-0 text-slate-600 transition group-hover:text-slate-400"
+            aria-hidden="true"
+          />
+          <span className="sr-only">Edit profile</span>
+        </button>
         <button
           type="button"
           onClick={onLogout}

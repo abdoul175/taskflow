@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { config } from '../config.js';
 import { db, newId } from '../db.js';
 import { hashPassword, verifyPassword } from '../lib/password.js';
-import { createSession, deleteSession } from '../lib/session.js';
+import { createSession, deleteOtherSessions, deleteSession } from '../lib/session.js';
 import {
   clearedSessionCookieOptions,
   sessionCookieOptions,
@@ -47,6 +47,31 @@ const registerSchema = z.object({
 const loginSchema = z.object({
   email: z.string().trim().toLowerCase().email('Enter a valid email address.'),
   password: z.string().min(1, 'Enter your password.').max(128),
+});
+
+const profileSchema = z.object({
+  name: z
+    .string()
+    .trim()
+    .min(2, 'Enter your name (at least 2 characters).')
+    .max(80, 'Name is too long.'),
+  email: z
+    .string()
+    .trim()
+    .toLowerCase()
+    .email('Enter a valid email address.')
+    .max(254, 'Email is too long.'),
+});
+
+const changePasswordSchema = z.object({
+  currentPassword: z
+    .string()
+    .min(1, 'Enter your current password.')
+    .max(128, 'Password is too long.'),
+  newPassword: z
+    .string()
+    .min(8, 'New password must be at least 8 characters.')
+    .max(128, 'Password is too long.'),
 });
 
 // Used to keep login timing similar when the email doesn't exist.
@@ -145,4 +170,82 @@ authRouter.post('/logout', (req, res) => {
 
 authRouter.get('/me', requireAuth, (req, res) => {
   res.json({ user: req.user });
+});
+
+authRouter.patch('/profile', requireAuth, (req, res) => {
+  const parsed = profileSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Invalid input.' });
+    return;
+  }
+
+  const { name, email } = parsed.data;
+  const userId = req.user!.id;
+
+  const existing = db
+    .prepare('SELECT id FROM users WHERE email = ? AND id <> ?')
+    .get(email, userId) as { id: string } | undefined;
+
+  if (existing) {
+    res.status(409).json({ error: 'An account with that email already exists.' });
+    return;
+  }
+
+  try {
+    db.prepare('UPDATE users SET name = ?, email = ? WHERE id = ?').run(
+      name,
+      email,
+      userId,
+    );
+  } catch (error) {
+    if (isUniqueViolation(error)) {
+      res.status(409).json({ error: 'An account with that email already exists.' });
+      return;
+    }
+    throw error;
+  }
+
+  const row = db.prepare('SELECT * FROM users WHERE id = ?').get(userId) as UserRow;
+  res.json({ user: toPublicUser(row) });
+});
+
+authRouter.post('/change-password', requireAuth, authLimiter, async (req, res) => {
+  const parsed = changePasswordSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Invalid input.' });
+    return;
+  }
+
+  const { currentPassword, newPassword } = parsed.data;
+
+  if (currentPassword === newPassword) {
+    res.status(400).json({ error: 'Choose a password different from your current one.' });
+    return;
+  }
+
+  const row = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user!.id) as
+    | UserRow
+    | undefined;
+
+  if (!row) {
+    res.status(401).json({ error: 'Please sign in to continue.' });
+    return;
+  }
+
+  const passwordMatches = await verifyPassword(currentPassword, row.password_hash);
+  if (!passwordMatches) {
+    res.status(400).json({ error: 'Your current password is incorrect.' });
+    return;
+  }
+
+  const passwordHash = await hashPassword(newPassword);
+  db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(
+    passwordHash,
+    row.id,
+  );
+
+  // Sign out every other device; the session that made this change stays valid.
+  if (req.sessionToken) deleteOtherSessions(row.id, req.sessionToken);
+
+  res.status(204).end();
 });

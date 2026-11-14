@@ -13,6 +13,7 @@ import { api, getErrorMessage } from '../api';
 import { useAuth } from '../auth';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { LogoMark } from '../components/Logo';
+import { ProfileModal } from '../components/ProfileModal';
 import { ProjectModal } from '../components/ProjectModal';
 import { Sidebar } from '../components/Sidebar';
 import { TaskCard } from '../components/TaskCard';
@@ -88,6 +89,7 @@ interface MobileBarProps {
   selectedProjectId: string | null;
   onSelectProject: (projectId: string | null) => void;
   onNewProject: () => void;
+  onOpenProfile: () => void;
   onLogout: () => void;
 }
 
@@ -97,6 +99,7 @@ function MobileBar({
   selectedProjectId,
   onSelectProject,
   onNewProject,
+  onOpenProfile,
   onLogout,
 }: MobileBarProps) {
   return (
@@ -109,12 +112,15 @@ function MobileBar({
           </span>
         </div>
         <div className="flex items-center gap-1.5">
-          <div
-            className="grid h-8 w-8 place-items-center rounded-full bg-gradient-to-br from-indigo-500 to-sky-500 text-[11px] font-bold text-white"
-            title={user.name}
+          <button
+            type="button"
+            onClick={onOpenProfile}
+            className="grid h-8 w-8 place-items-center rounded-full bg-gradient-to-br from-indigo-500 to-sky-500 text-[11px] font-bold text-white transition hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/60"
+            title="Edit profile"
           >
             {initials(user.name)}
-          </div>
+            <span className="sr-only">Edit profile</span>
+          </button>
           <button
             type="button"
             onClick={onLogout}
@@ -186,6 +192,7 @@ export default function Dashboard() {
     status: TaskStatus;
   }>({ open: false, task: null, status: 'todo' });
   const [projectDialogOpen, setProjectDialogOpen] = useState(false);
+  const [profileDialogOpen, setProfileDialogOpen] = useState(false);
 
   const [taskToDelete, setTaskToDelete] = useState<Task | null>(null);
   const [projectToDelete, setProjectToDelete] = useState<Project | null>(null);
@@ -384,6 +391,7 @@ export default function Dashboard() {
         onSelectProject={setSelectedProjectId}
         onNewProject={() => setProjectDialogOpen(true)}
         onDeleteProject={setProjectToDelete}
+        onOpenProfile={() => setProfileDialogOpen(true)}
         onLogout={() => void handleLogout()}
       />
 
@@ -394,6 +402,7 @@ export default function Dashboard() {
           selectedProjectId={selectedProjectId}
           onSelectProject={setSelectedProjectId}
           onNewProject={() => setProjectDialogOpen(true)}
+          onOpenProfile={() => setProfileDialogOpen(true)}
           onLogout={() => void handleLogout()}
         />
 
@@ -554,6 +563,11 @@ export default function Dashboard() {
         open={projectDialogOpen}
         onClose={() => setProjectDialogOpen(false)}
         onCreated={handleProjectCreated}
+      />
+
+      <ProfileModal
+        open={profileDialogOpen}
+        onClose={() => setProfileDialogOpen(false)}
       />
 
       <ConfirmDialog

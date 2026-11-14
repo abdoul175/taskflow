@@ -31,6 +31,17 @@ export function deleteSession(token: string): void {
   db.prepare('DELETE FROM sessions WHERE id = ?').run(hashToken(token));
 }
 
+/**
+ * Revoke every session for a user except the one making the request.
+ * Used after a password change so other devices are signed out.
+ */
+export function deleteOtherSessions(userId: string, keepToken: string): void {
+  db.prepare('DELETE FROM sessions WHERE user_id = ? AND id <> ?').run(
+    userId,
+    hashToken(keepToken),
+  );
+}
+
 export function findSessionUser(token: string): PublicUser | null {
   const row = db
     .prepare(

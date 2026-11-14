@@ -71,6 +71,16 @@ export const api = {
         method: 'POST',
         body: JSON.stringify({ name, email, password }),
       }).then((data) => data.user),
+    updateProfile: (name: string, email: string) =>
+      request<{ user: User }>('/auth/profile', {
+        method: 'PATCH',
+        body: JSON.stringify({ name, email }),
+      }).then((data) => data.user),
+    changePassword: (currentPassword: string, newPassword: string) =>
+      request<void>('/auth/change-password', {
+        method: 'POST',
+        body: JSON.stringify({ currentPassword, newPassword }),
+      }),
     logout: () => request<void>('/auth/logout', { method: 'POST' }),
   },
   projects: {

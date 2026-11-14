@@ -7,6 +7,7 @@ A full-stack task manager with email/password authentication. Built with a React
 ## Features
 
 - **Accounts** — register, sign in, sign out, persistent cookie sessions
+- **Profile** — update your name and email, and change your password from the sidebar
 - **Projects** — create and delete color-coded projects; every account starts with a “Personal” project
 - **Tasks** — title, description, status (To do / In progress / Done), priority, and due date
 - **Kanban board** — quick status transitions, overdue highlighting, per-column counts, and live stats
@@ -94,7 +95,8 @@ Use `npm run dev -w server` or `npm run dev -w client` to run one side alone.
 3. The raw token travels in an **httpOnly, SameSite=Lax cookie** (`Secure` in production), valid for 7 days. JavaScript never sees it.
 4. **Login** uses a generic “Invalid email or password” message and a dummy hash comparison when the email doesn’t exist, reducing account enumeration and timing clues.
 5. **Authorization** — `requireAuth` resolves the cookie on every protected request; all project/task queries include the user ID so users can only ever touch their own rows.
-6. **Hardening** — `helmet` headers, a 100 kB JSON body limit, auth rate limiting (30 attempts / 15 minutes / IP), and an origin allow-list on state-changing requests as defense-in-depth alongside SameSite cookies.
+6. **Password changes** — verified against the stored hash, then re-hashed with a fresh salt. Every other session for the account is revoked, so a stolen session cannot outlive the change.
+7. **Hardening** — `helmet` headers, a 100 kB JSON body limit, auth rate limiting (30 attempts / 15 minutes / IP), and an origin allow-list on state-changing requests as defense-in-depth alongside SameSite cookies.
 
 Passwords are never stored or logged in plain text. No application secret is required: sessions are random tokens, and only their hashes are persisted.
 
@@ -109,6 +111,8 @@ All routes are prefixed with `/api`. Protected routes require the session cookie
 | `POST`   | `/auth/login`         |      | `{ email, password }` → user + cookie  |
 | `POST`   | `/auth/logout`        |      | Clears the session and cookie          |
 | `GET`    | `/auth/me`            |  ✓   | Current user                           |
+| `PATCH`  | `/auth/profile`       |  ✓   | `{ name, email }` → updated user       |
+| `POST`   | `/auth/change-password` | ✓  | `{ currentPassword, newPassword }`; revokes other sessions |
 | `GET`    | `/projects`           |  ✓   | Projects with task counts              |
 | `POST`   | `/projects`           |  ✓   | `{ name, color? }`                     |
 | `PATCH`  | `/projects/:id`       |  ✓   | `{ name?, color? }`                    |

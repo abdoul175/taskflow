@@ -51,9 +51,9 @@ export function Modal({
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
-        className={`animate-rise relative w-full ${
+        className={`animate-rise relative max-h-[calc(100dvh-1.5rem)] w-full overflow-y-auto overscroll-contain ${
           size === 'lg' ? 'max-w-2xl' : 'max-w-lg'
-        } rounded-2xl border border-white/10 bg-[#0b1220] p-5 shadow-2xl shadow-black/60 sm:p-6`}
+        } rounded-2xl border border-white/10 bg-[#0b1220] p-5 shadow-2xl shadow-black/60 sm:max-h-[calc(100dvh-3rem)] sm:p-6`}
       >
         <div className="mb-5 flex items-start justify-between gap-4">
           <div>
