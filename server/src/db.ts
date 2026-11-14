@@ -137,8 +137,6 @@ async function createDriver(): Promise<SqlDriver> {
   return createPgliteDriver(config.pgliteDataDir);
 }
 
-const driver = await createDriver();
-
 const schemaStatements: Statement[] = [
   {
     // Serialize schema creation when several cold starts happen at once.
@@ -246,40 +244,67 @@ const schemaStatements: Statement[] = [
 
 // Idempotent and safe to run on every cold start: all statements use
 // IF NOT EXISTS, and the advisory lock serializes concurrent cold starts.
-await driver.transaction(schemaStatements);
+async function initialize(): Promise<SqlDriver> {
+  const driver = await createDriver();
+  await driver.transaction(schemaStatements);
 
-// Housekeeping: expired sessions and one-time tokens are useless.
-const nowIso = new Date().toISOString();
-for (const table of [
-  'sessions',
-  'login_challenges',
-  'password_reset_tokens',
-  'email_verification_tokens',
-]) {
-  await driver.query(`DELETE FROM ${table} WHERE expires_at <= ?`, [nowIso]);
+  // Housekeeping: expired sessions and one-time tokens are useless.
+  const nowIso = new Date().toISOString();
+  for (const table of [
+    'sessions',
+    'login_challenges',
+    'password_reset_tokens',
+    'email_verification_tokens',
+  ]) {
+    await driver.query(`DELETE FROM ${table} WHERE expires_at <= ?`, [nowIso]);
+  }
+
+  return driver;
+}
+
+// Initialization is lazy so importing the app (for example during a Vercel
+// build) never opens a database connection, and so a transient startup error
+// is retried on the next request instead of poisoning the whole instance.
+let driverPromise: Promise<SqlDriver> | undefined;
+
+function getDriver(): Promise<SqlDriver> {
+  if (!driverPromise) {
+    driverPromise = initialize().catch((error: unknown) => {
+      driverPromise = undefined;
+      throw error;
+    });
+  }
+  return driverPromise;
 }
 
 export const db = {
   async all<T>(sql: string, params?: unknown[]): Promise<T[]> {
+    const driver = await getDriver();
     const result = await driver.query<T>(sql, params);
     return result.rows;
   },
 
   async get<T>(sql: string, params?: unknown[]): Promise<T | undefined> {
+    const driver = await getDriver();
     const result = await driver.query<T>(sql, params);
     return result.rows[0];
   },
 
   async run(sql: string, params?: unknown[]): Promise<RunResult> {
+    const driver = await getDriver();
     const result = await driver.query(sql, params);
     return { changes: result.changes };
   },
 
   async transaction(statements: Statement[]): Promise<void> {
+    const driver = await getDriver();
     await driver.transaction(statements);
   },
 
   async close(): Promise<void> {
+    if (!driverPromise) return;
+    const driver = await driverPromise;
+    driverPromise = undefined;
     await driver.close();
   },
 };
