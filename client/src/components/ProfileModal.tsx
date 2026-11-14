@@ -29,6 +29,37 @@ function initials(name: string): string {
     .toUpperCase();
 }
 
+/**
+ * Copy text with the Clipboard API, falling back to a hidden textarea for
+ * browsers or origins (such as plain-HTTP LAN addresses) where it is blocked.
+ */
+async function copyToClipboard(value: string): Promise<boolean> {
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(value);
+      return true;
+    } catch {
+      // Fall through to the selection-based copy.
+    }
+  }
+
+  try {
+    const textarea = document.createElement('textarea');
+    textarea.value = value;
+    textarea.setAttribute('readonly', '');
+    textarea.style.position = 'fixed';
+    textarea.style.top = '0';
+    textarea.style.opacity = '0';
+    document.body.appendChild(textarea);
+    textarea.select();
+    const succeeded = document.execCommand('copy');
+    document.body.removeChild(textarea);
+    return succeeded;
+  } catch {
+    return false;
+  }
+}
+
 interface PasswordFieldProps {
   id: string;
   label: string;
@@ -124,6 +155,7 @@ export function ProfileModal({ open, onClose }: ProfileModalProps) {
   const [setupCode, setSetupCode] = useState('');
   const [recoveryCodes, setRecoveryCodes] = useState<string[] | null>(null);
   const [codesCopied, setCodesCopied] = useState(false);
+  const [setupKeyCopied, setSetupKeyCopied] = useState(false);
   const [disableOpen, setDisableOpen] = useState(false);
   const [disablePassword, setDisablePassword] = useState('');
   const [disableCode, setDisableCode] = useState('');
@@ -150,6 +182,7 @@ export function ProfileModal({ open, onClose }: ProfileModalProps) {
     setSetupCode('');
     setRecoveryCodes(null);
     setCodesCopied(false);
+    setSetupKeyCopied(false);
     setDisableOpen(false);
     setDisablePassword('');
     setDisableCode('');
@@ -253,6 +286,7 @@ export function ProfileModal({ open, onClose }: ProfileModalProps) {
       const data = await api.auth.startTwoFactorSetup();
       setSetup(data);
       setSetupCode('');
+      setSetupKeyCopied(false);
     } catch (setupError) {
       setTwoFactorError(
         getErrorMessage(
@@ -276,6 +310,7 @@ export function ProfileModal({ open, onClose }: ProfileModalProps) {
       setSetup(null);
       setSetupCode('');
       setCodesCopied(false);
+      setSetupKeyCopied(false);
       await refreshUser();
       setTwoFactorSaved('Two-factor authentication is now on.');
     } catch (enableError) {
@@ -315,14 +350,27 @@ export function ProfileModal({ open, onClose }: ProfileModalProps) {
   async function handleCopyRecoveryCodes() {
     if (!recoveryCodes) return;
 
-    try {
-      await navigator.clipboard.writeText(recoveryCodes.join('\n'));
-      setCodesCopied(true);
-    } catch {
+    if (!(await copyToClipboard(recoveryCodes.join('\n')))) {
       setTwoFactorError(
         'Could not copy the codes. Select and copy them manually.',
       );
+      return;
     }
+
+    setCodesCopied(true);
+  }
+
+  async function handleCopySetupKey() {
+    if (!setup) return;
+
+    if (!(await copyToClipboard(setup.secret))) {
+      setTwoFactorError(
+        'Could not copy the setup key. Select and copy it manually.',
+      );
+      return;
+    }
+
+    setSetupKeyCopied(true);
   }
 
   return (
@@ -342,6 +390,12 @@ export function ProfileModal({ open, onClose }: ProfileModalProps) {
               {user.name}
             </p>
             <p className="truncate text-xs text-slate-500">{user.email}</p>
+            {user.googleConnected && (
+              <p className="mt-1 flex items-center gap-1 text-[11px] font-medium text-emerald-300">
+                <CheckCircle2 className="h-3 w-3" aria-hidden="true" />
+                Google account connected
+              </p>
+            )}
             <p className="mt-1 text-[11px] text-slate-600">
               Member since {memberSince}
             </p>
@@ -681,20 +735,40 @@ export function ProfileModal({ open, onClose }: ProfileModalProps) {
         ) : setup ? (
           <>
             <p className="text-sm leading-relaxed text-slate-400">
-              Scan the QR code with Google Authenticator, 1Password, Authy, or
-              any TOTP app, then enter the 6-digit code it shows.
+              Scan this QR code with{' '}
+              <span className="font-medium text-slate-300">
+                Microsoft Authenticator
+              </span>
+              . In the app, tap <strong className="text-slate-300">+</strong>,
+              choose <strong className="text-slate-300">Other account</strong>,
+              then scan. Google Authenticator, 1Password, Authy, and other TOTP
+              apps also work.
             </p>
 
             <div className="flex flex-col gap-4 rounded-xl border border-white/[0.06] bg-white/[0.02] p-3.5 sm:flex-row">
               <img
                 src={setup.qrDataUrl}
-                alt="QR code for adding Taskflow to an authenticator app"
+                alt="QR code for adding Taskflow to Microsoft Authenticator"
                 className="h-40 w-40 shrink-0 self-center rounded-lg bg-white p-1"
               />
               <div className="min-w-0 flex-1">
-                <p className="text-xs text-slate-500">
-                  Can&apos;t scan? Enter this key manually:
-                </p>
+                <div className="flex items-start justify-between gap-2">
+                  <p className="text-xs text-slate-500">
+                    Can&apos;t scan? Enter this setup key manually:
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => void handleCopySetupKey()}
+                    className="btn-ghost shrink-0 px-2 py-1 text-[11px]"
+                  >
+                    {setupKeyCopied ? (
+                      <CheckCircle2 className="h-3 w-3" aria-hidden="true" />
+                    ) : (
+                      <Copy className="h-3 w-3" aria-hidden="true" />
+                    )}
+                    {setupKeyCopied ? 'Copied' : 'Copy'}
+                  </button>
+                </div>
                 <code className="mt-1 block break-all rounded-lg border border-white/[0.06] bg-black/30 px-2.5 py-2 font-mono text-[11px] leading-relaxed tracking-wider text-slate-300">
                   {setup.secret}
                 </code>
@@ -753,6 +827,7 @@ export function ProfileModal({ open, onClose }: ProfileModalProps) {
               onClick={() => {
                 setSetup(null);
                 setSetupCode('');
+                setSetupKeyCopied(false);
                 setTwoFactorError(null);
               }}
               className="btn-ghost px-2.5 py-1.5 text-xs"

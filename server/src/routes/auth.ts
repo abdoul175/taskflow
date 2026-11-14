@@ -1,8 +1,18 @@
-import { Router, type Request, type Response } from 'express';
+import { createHash } from 'node:crypto';
+import {
+  Router,
+  type CookieOptions,
+  type Request,
+  type Response,
+} from 'express';
 import { rateLimit } from 'express-rate-limit';
 import QRCode from 'qrcode';
 import { z } from 'zod';
-import { config, emailPreviewMode } from '../config.js';
+import {
+  config,
+  emailPreviewMode,
+  googleOAuthEnabled,
+} from '../config.js';
 import { db, newId } from '../db.js';
 import { hashPassword, verifyPassword } from '../lib/password.js';
 import { sendMail } from '../lib/mailer.js';
@@ -31,8 +41,35 @@ export const authRouter = Router();
 const EMAIL_CODE_TTL_MS = 15 * 60 * 1000;
 const RESET_TOKEN_TTL_MS = 30 * 60 * 1000;
 const LOGIN_CHALLENGE_TTL_MS = 5 * 60 * 1000;
+const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
 const MAX_CODE_ATTEMPTS = 5;
 const RECOVERY_CODE_COUNT = 8;
+const OAUTH_STATE_COOKIE = 'taskflow_oauth_state';
+const LOGIN_CHALLENGE_COOKIE = 'taskflow_2fa_challenge';
+
+const oauthStateCookieBase: CookieOptions = {
+  httpOnly: true,
+  sameSite: 'lax',
+  secure: config.cookieSecure,
+  path: '/api/auth/google',
+};
+
+const oauthStateCookieOptions: CookieOptions = {
+  ...oauthStateCookieBase,
+  maxAge: OAUTH_STATE_TTL_MS,
+};
+
+const loginChallengeCookieBase: CookieOptions = {
+  httpOnly: true,
+  sameSite: 'lax',
+  secure: config.cookieSecure,
+  path: '/',
+};
+
+const loginChallengeCookieOptions: CookieOptions = {
+  ...loginChallengeCookieBase,
+  maxAge: LOGIN_CHALLENGE_TTL_MS,
+};
 
 // Codes and links are only echoed back to the client when no mail transport is
 // configured and the app is not running in production.
@@ -132,7 +169,11 @@ const twoFactorCodeSchema = z.object({
 });
 
 const twoFactorLoginSchema = z.object({
-  challengeToken: z.string().min(20, 'This sign-in attempt is invalid.').max(200),
+  challengeToken: z
+    .string()
+    .min(20, 'This sign-in attempt is invalid.')
+    .max(200)
+    .optional(),
   code: z
     .string()
     .trim()
@@ -182,6 +223,19 @@ function appOrigin(req: Request): string {
   }
   if (config.appUrl) return config.appUrl;
   return `${req.protocol}://${req.get('host')}`;
+}
+
+function googleRedirectUri(req: Request): string {
+  if (config.google.redirectUri) return config.google.redirectUri;
+  return `${appOrigin(req)}/api/auth/google/callback`;
+}
+
+function clearOAuthStateCookie(res: Response): void {
+  res.clearCookie(OAUTH_STATE_COOKIE, oauthStateCookieBase);
+}
+
+function clearLoginChallengeCookie(res: Response): void {
+  res.clearCookie(LOGIN_CHALLENGE_COOKIE, loginChallengeCookieBase);
 }
 
 function emailFrame(title: string, body: string): string {
@@ -320,6 +374,258 @@ function createLoginChallenge(userId: string): string {
 
   return token;
 }
+
+authRouter.get('/providers', (_req, res) => {
+  res.json({ google: googleOAuthEnabled });
+});
+
+authRouter.get('/google', authLimiter, (req, res) => {
+  if (!googleOAuthEnabled) {
+    res.redirect('/login?oauth=unavailable');
+    return;
+  }
+
+  const state = randomToken();
+  const codeVerifier = randomToken();
+  const codeChallenge = createHash('sha256')
+    .update(codeVerifier)
+    .digest('base64url');
+  const redirectUri = googleRedirectUri(req);
+
+  const statePayload = Buffer.from(
+    JSON.stringify({ state, codeVerifier, redirectUri }),
+  ).toString('base64url');
+
+  res.cookie(OAUTH_STATE_COOKIE, statePayload, oauthStateCookieOptions);
+
+  const authUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
+  authUrl.searchParams.set('client_id', config.google.clientId);
+  authUrl.searchParams.set('redirect_uri', redirectUri);
+  authUrl.searchParams.set('response_type', 'code');
+  authUrl.searchParams.set('scope', 'openid email profile');
+  authUrl.searchParams.set('state', state);
+  authUrl.searchParams.set('code_challenge', codeChallenge);
+  authUrl.searchParams.set('code_challenge_method', 'S256');
+  authUrl.searchParams.set('prompt', 'select_account');
+
+  res.redirect(authUrl.toString());
+});
+
+authRouter.get('/google/callback', authLimiter, async (req, res) => {
+  const fail = (reason = 'error') => {
+    clearOAuthStateCookie(res);
+    res.redirect(`/login?oauth=${reason}`);
+  };
+
+  if (!googleOAuthEnabled) {
+    fail('unavailable');
+    return;
+  }
+
+  const rawState = req.cookies?.[OAUTH_STATE_COOKIE];
+  if (typeof rawState !== 'string') {
+    fail();
+    return;
+  }
+
+  let oauthState: {
+    state?: string;
+    codeVerifier?: string;
+    redirectUri?: string;
+  };
+
+  try {
+    oauthState = JSON.parse(
+      Buffer.from(rawState, 'base64url').toString('utf8'),
+    ) as typeof oauthState;
+  } catch {
+    fail();
+    return;
+  }
+
+  const returnedState =
+    typeof req.query.state === 'string' ? req.query.state : '';
+  const code = typeof req.query.code === 'string' ? req.query.code : '';
+
+  if (
+    !oauthState.state ||
+    !oauthState.codeVerifier ||
+    !oauthState.redirectUri ||
+    !returnedState ||
+    !code ||
+    !safeEqual(oauthState.state, returnedState)
+  ) {
+    fail();
+    return;
+  }
+
+  try {
+    const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        code,
+        client_id: config.google.clientId,
+        client_secret: config.google.clientSecret,
+        redirect_uri: oauthState.redirectUri,
+        grant_type: 'authorization_code',
+        code_verifier: oauthState.codeVerifier,
+      }),
+    });
+
+    if (!tokenResponse.ok) {
+      console.error(
+        'Google token exchange failed:',
+        tokenResponse.status,
+        await tokenResponse.text(),
+      );
+      fail();
+      return;
+    }
+
+    const tokens = (await tokenResponse.json()) as { access_token?: string };
+    if (!tokens.access_token) {
+      fail();
+      return;
+    }
+
+    const profileResponse = await fetch(
+      'https://openidconnect.googleapis.com/v1/userinfo',
+      { headers: { Authorization: `Bearer ${tokens.access_token}` } },
+    );
+
+    if (!profileResponse.ok) {
+      console.error('Google userinfo request failed:', profileResponse.status);
+      fail();
+      return;
+    }
+
+    const profile = (await profileResponse.json()) as {
+      sub?: string;
+      email?: string;
+      email_verified?: boolean;
+      name?: string;
+    };
+
+    if (!profile.sub || !profile.email || profile.email_verified !== true) {
+      fail();
+      return;
+    }
+
+    const email = profile.email.trim().toLowerCase();
+    const displayName =
+      profile.name?.trim().slice(0, 80) ||
+      email.split('@')[0] ||
+      'Taskflow user';
+
+    let user = db
+      .prepare('SELECT * FROM users WHERE google_id = ?')
+      .get(profile.sub) as UserRow | undefined;
+
+    if (user) {
+      if (user.name !== displayName) {
+        db.prepare('UPDATE users SET name = ? WHERE id = ?').run(
+          displayName,
+          user.id,
+        );
+        user = getUserRow(user.id)!;
+      }
+    } else {
+      const existing = db
+        .prepare('SELECT * FROM users WHERE email = ?')
+        .get(email) as UserRow | undefined;
+
+      if (existing) {
+        if (existing.google_id && existing.google_id !== profile.sub) {
+          fail('link-conflict');
+          return;
+        }
+
+        const wasUnverified = existing.email_verified === 0;
+        const passwordHash = wasUnverified
+          ? await hashPassword(randomToken())
+          : existing.password_hash;
+
+        db.transaction(() => {
+          db.prepare(
+            'UPDATE users SET google_id = ?, email_verified = 1, password_hash = ? WHERE id = ?',
+          ).run(profile.sub, passwordHash, existing.id);
+
+          if (wasUnverified) {
+            // Google has now proven ownership of an address that was only
+            // pre-registered. Invalidate the old password and sessions.
+            db.prepare('DELETE FROM sessions WHERE user_id = ?').run(existing.id);
+            db.prepare('DELETE FROM login_challenges WHERE user_id = ?').run(
+              existing.id,
+            );
+            db.prepare(
+              'DELETE FROM email_verification_tokens WHERE user_id = ?',
+            ).run(existing.id);
+          }
+        })();
+
+        user = getUserRow(existing.id)!;
+      } else {
+        const passwordHash = await hashPassword(randomToken());
+        const userId = newId();
+        const now = new Date().toISOString();
+
+        try {
+          db.transaction(() => {
+            db.prepare(
+              `INSERT INTO users (id, name, email, password_hash, google_id, email_verified, created_at)
+               VALUES (?, ?, ?, ?, ?, 1, ?)`,
+            ).run(
+              userId,
+              displayName,
+              email,
+              passwordHash,
+              profile.sub,
+              now,
+            );
+
+            db.prepare(
+              'INSERT INTO projects (id, user_id, name, color, created_at) VALUES (?, ?, ?, ?, ?)',
+            ).run(newId(), userId, 'Personal', '#6366f1', now);
+          })();
+        } catch (error) {
+          if (isUniqueViolation(error)) {
+            fail('link-conflict');
+            return;
+          }
+          throw error;
+        }
+
+        user = getUserRow(userId)!;
+      }
+    }
+
+    if (!user) {
+      fail();
+      return;
+    }
+
+    clearOAuthStateCookie(res);
+    clearLoginChallengeCookie(res);
+
+    if (user.totp_enabled === 1) {
+      const challengeToken = createLoginChallenge(user.id);
+      res.cookie(
+        LOGIN_CHALLENGE_COOKIE,
+        challengeToken,
+        loginChallengeCookieOptions,
+      );
+      res.redirect('/login?oauth=2fa');
+      return;
+    }
+
+    startSession(res, user.id);
+    res.redirect('/');
+  } catch (error) {
+    console.error('Google sign-in failed:', error);
+    fail();
+  }
+});
 
 authRouter.post('/register', authLimiter, emailLimiter, async (req, res) => {
   const parsed = registerSchema.safeParse(req.body);
@@ -518,7 +824,20 @@ authRouter.post('/login/2fa', authLimiter, (req, res) => {
     return;
   }
 
-  const { challengeToken, code } = parsed.data;
+  const cookieChallengeToken = req.cookies?.[LOGIN_CHALLENGE_COOKIE];
+  const challengeToken =
+    parsed.data.challengeToken ??
+    (typeof cookieChallengeToken === 'string' ? cookieChallengeToken : '');
+  const { code } = parsed.data;
+
+  if (!challengeToken) {
+    clearLoginChallengeCookie(res);
+    res.status(401).json({
+      error: 'This sign-in attempt expired. Please sign in again.',
+    });
+    return;
+  }
+
   const challengeId = hashSecret(challengeToken);
   const challenge = db
     .prepare('SELECT * FROM login_challenges WHERE id = ?')
@@ -527,6 +846,7 @@ authRouter.post('/login/2fa', authLimiter, (req, res) => {
     | undefined;
 
   if (!challenge) {
+    clearLoginChallengeCookie(res);
     res.status(401).json({
       error: 'This sign-in attempt expired. Please sign in again.',
     });
@@ -535,6 +855,7 @@ authRouter.post('/login/2fa', authLimiter, (req, res) => {
 
   if (new Date(challenge.expires_at).getTime() <= Date.now()) {
     db.prepare('DELETE FROM login_challenges WHERE id = ?').run(challenge.id);
+    clearLoginChallengeCookie(res);
     res.status(401).json({
       error: 'This sign-in attempt expired. Please sign in again.',
     });
@@ -544,6 +865,7 @@ authRouter.post('/login/2fa', authLimiter, (req, res) => {
   const user = getUserRow(challenge.user_id);
   if (!user || user.totp_enabled !== 1) {
     db.prepare('DELETE FROM login_challenges WHERE id = ?').run(challenge.id);
+    clearLoginChallengeCookie(res);
     res.status(401).json({
       error: 'This sign-in attempt expired. Please sign in again.',
     });
@@ -554,6 +876,7 @@ authRouter.post('/login/2fa', authLimiter, (req, res) => {
     const attempts = challenge.attempts + 1;
     if (attempts >= MAX_CODE_ATTEMPTS) {
       db.prepare('DELETE FROM login_challenges WHERE id = ?').run(challenge.id);
+      clearLoginChallengeCookie(res);
       res.status(401).json({
         error: 'Too many incorrect codes. Please sign in again.',
       });
@@ -568,6 +891,7 @@ authRouter.post('/login/2fa', authLimiter, (req, res) => {
   }
 
   db.prepare('DELETE FROM login_challenges WHERE id = ?').run(challenge.id);
+  clearLoginChallengeCookie(res);
   startSession(res, user.id);
   res.json({ user: toPublicUser(user) });
 });
@@ -812,7 +1136,7 @@ authRouter.post('/2fa/setup', requireAuth, async (req, res) => {
   const otpauthUrl = totpProvisioningUri(secret, row.email);
   const qrDataUrl = await QRCode.toDataURL(otpauthUrl, {
     errorCorrectionLevel: 'M',
-    margin: 1,
+    margin: 2,
     width: 240,
     color: { dark: '#0b1220', light: '#ffffff' },
   });

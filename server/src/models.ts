@@ -3,6 +3,7 @@ export interface UserRow {
   name: string;
   email: string;
   password_hash: string;
+  google_id: string | null;
   email_verified: number;
   totp_secret: string | null;
   totp_enabled: number;
@@ -41,6 +42,7 @@ export interface PublicUser {
   email: string;
   emailVerified: boolean;
   twoFactorEnabled: boolean;
+  googleConnected: boolean;
   createdAt: string;
 }
 
@@ -51,6 +53,7 @@ export function toPublicUser(row: UserRow): PublicUser {
     email: row.email,
     emailVerified: row.email_verified === 1,
     twoFactorEnabled: row.totp_enabled === 1,
+    googleConnected: row.google_id !== null,
     createdAt: row.created_at,
   };
 }

@@ -12,6 +12,8 @@ const serverRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '.
 const isProduction = process.env.NODE_ENV === 'production';
 
 const smtpPort = Number(process.env.SMTP_PORT ?? 587);
+const googleClientId = process.env.GOOGLE_CLIENT_ID?.trim() ?? '';
+const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET?.trim() ?? '';
 
 export const config = {
   port: Number(process.env.PORT ?? 4000),
@@ -32,6 +34,12 @@ export const config = {
   cookieSecure: process.env.COOKIE_SECURE
     ? process.env.COOKIE_SECURE === 'true'
     : isProduction,
+  google: {
+    clientId: googleClientId,
+    clientSecret: googleClientSecret,
+    /** Optional override; otherwise derived from the request origin. */
+    redirectUri: process.env.GOOGLE_REDIRECT_URI?.trim() ?? '',
+  },
   smtp: {
     host: process.env.SMTP_HOST ?? '',
     port: smtpPort,
@@ -46,3 +54,8 @@ export const config = {
 
 /** True when no SMTP server is configured, so emails can only be previewed. */
 export const emailPreviewMode = !config.smtp.host;
+
+/** Google sign-in is available once both OAuth client values are configured. */
+export const googleOAuthEnabled = Boolean(
+  config.google.clientId && config.google.clientSecret,
+);

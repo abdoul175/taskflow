@@ -17,6 +17,7 @@ db.exec(`
     name TEXT NOT NULL,
     email TEXT NOT NULL UNIQUE COLLATE NOCASE,
     password_hash TEXT NOT NULL,
+    google_id TEXT,
     email_verified INTEGER NOT NULL DEFAULT 0,
     totp_secret TEXT,
     totp_enabled INTEGER NOT NULL DEFAULT 0,
@@ -128,6 +129,16 @@ if (!hasColumn('users', 'totp_enabled')) {
 if (!hasColumn('users', 'totp_last_step')) {
   db.exec('ALTER TABLE users ADD COLUMN totp_last_step INTEGER');
 }
+
+if (!hasColumn('users', 'google_id')) {
+  db.exec('ALTER TABLE users ADD COLUMN google_id TEXT');
+}
+
+// SQLite allows multiple NULLs in a unique index, so password-only accounts
+// can coexist while each Google subject maps to at most one user.
+db.exec(
+  'CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_id ON users(google_id)',
+);
 
 // Housekeeping: expired sessions and one-time tokens are useless.
 const nowIso = new Date().toISOString();

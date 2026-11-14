@@ -1,5 +1,10 @@
 import { useState, type FormEvent } from 'react';
-import { Link, Navigate, useNavigate } from 'react-router-dom';
+import {
+  Link,
+  Navigate,
+  useNavigate,
+  useSearchParams,
+} from 'react-router-dom';
 import {
   ArrowLeft,
   ArrowRight,
@@ -18,19 +23,56 @@ import { AuthShell } from '../components/AuthShell';
 const DEMO_EMAIL = 'demo@taskflow.dev';
 const DEMO_PASSWORD = 'taskflow123';
 
+function GoogleIcon() {
+  return (
+    <svg viewBox="0 0 48 48" className="h-4 w-4" aria-hidden="true">
+      <path
+        fill="#FFC107"
+        d="M43.611 20.083H42V20H24v8h11.303C33.654 32.657 29.223 36 24 36c-6.627 0-12-5.373-12-12s5.373-12 12-12c3.059 0 5.842 1.154 7.961 3.039l5.657-5.657C34.046 6.053 29.268 4 24 4 12.955 4 4 12.955 4 24s8.955 20 20 20 20-8.955 20-20c0-1.341-.138-2.65-.389-3.917z"
+      />
+      <path
+        fill="#FF3D00"
+        d="M6.306 14.691l6.571 4.819C14.655 15.108 18.961 12 24 12c3.059 0 5.842 1.154 7.961 3.039l5.657-5.657C34.046 6.053 29.268 4 24 4 16.318 4 9.656 8.337 6.306 14.691z"
+      />
+      <path
+        fill="#4CAF50"
+        d="M24 44c5.166 0 9.86-1.977 13.409-5.192l-6.19-5.238C29.211 35.091 26.715 36 24 36c-5.202 0-9.619-3.317-11.283-7.946l-6.522 5.025C9.505 39.556 16.227 44 24 44z"
+      />
+      <path
+        fill="#1976D2"
+        d="M43.611 20.083H42V20H24v8h11.303c-1.649 4.657-6.08 8-11.303 8-5.202 0-9.619-3.317-11.283-7.946l-6.522 5.025C9.505 39.556 16.227 44 24 44c7.682 0 14.344-4.337 17.694-10.691 1.646-3.146 2.306-6.617 2.306-10.309 0-1.341-.138-2.65-.389-3.917z"
+      />
+    </svg>
+  );
+}
+
 export default function AuthPage({ mode }: { mode: 'login' | 'register' }) {
   const isLogin = mode === 'login';
-  const { user, login, register, completeTwoFactor } = useAuth();
+  const { user, googleEnabled, login, register, completeTwoFactor } = useAuth();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const oauth = searchParams.get('oauth');
+  const googleTwoFactor = oauth === '2fa';
+
+  const oauthError =
+    oauth === 'error'
+      ? 'Google sign-in could not be completed. Please try again.'
+      : oauth === 'unavailable'
+        ? 'Google sign-in is not configured on this server yet.'
+        : oauth === 'link-conflict'
+          ? 'That email address is already linked to a different Google account.'
+          : null;
 
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(oauthError);
   const [submitting, setSubmitting] = useState(false);
 
-  const [step, setStep] = useState<'credentials' | 'two-factor'>('credentials');
+  const [step, setStep] = useState<'credentials' | 'two-factor'>(
+    googleTwoFactor ? 'two-factor' : 'credentials',
+  );
   const [challengeToken, setChallengeToken] = useState('');
   const [code, setCode] = useState('');
   const [codeError, setCodeError] = useState<string | null>(null);
@@ -96,7 +138,7 @@ export default function AuthPage({ mode }: { mode: 'login' | 'register' }) {
     setVerifying(true);
 
     try {
-      await completeTwoFactor(challengeToken, code);
+      await completeTwoFactor(challengeToken || null, code);
       navigate('/', { replace: true });
     } catch (submitError) {
       setCodeError(
@@ -118,6 +160,10 @@ export default function AuthPage({ mode }: { mode: 'login' | 'register' }) {
     setChallengeToken('');
     setCode('');
     setCodeError(null);
+    setError(null);
+
+    // Drop the OAuth marker so a reload starts from the normal sign-in form.
+    if (oauth) navigate('/login', { replace: true });
   }
 
   if (step === 'two-factor') {
@@ -125,7 +171,11 @@ export default function AuthPage({ mode }: { mode: 'login' | 'register' }) {
       <AuthShell
         eyebrow="Two-step verification"
         title="Enter your code"
-        description="Open your authenticator app and enter the 6-digit code for Taskflow."
+        description={
+          googleTwoFactor
+            ? 'Google verified your email. Enter the 6-digit code from Microsoft Authenticator or another authenticator app to finish signing in.'
+            : 'Open Microsoft Authenticator or another authenticator app and enter the 6-digit code for Taskflow.'
+        }
       >
         {codeError && (
           <div
@@ -212,7 +262,26 @@ export default function AuthPage({ mode }: { mode: 'login' | 'register' }) {
         </div>
       )}
 
-      <form onSubmit={handleSubmit} className="mt-7 space-y-4">
+      {googleEnabled && (
+        <div className="mt-7">
+          <a href="/api/auth/google" className="btn-secondary w-full py-3">
+            <GoogleIcon />
+            {isLogin ? 'Continue with Google' : 'Sign up with Google'}
+          </a>
+          <div className="my-5 flex items-center gap-3" aria-hidden="true">
+            <span className="h-px flex-1 bg-white/[0.08]" />
+            <span className="text-[11px] font-medium uppercase tracking-wider text-slate-500">
+              {isLogin ? 'or use email' : 'or sign up with email'}
+            </span>
+            <span className="h-px flex-1 bg-white/[0.08]" />
+          </div>
+        </div>
+      )}
+
+      <form
+        onSubmit={handleSubmit}
+        className={googleEnabled ? 'space-y-4' : 'mt-7 space-y-4'}
+      >
         {!isLogin && (
           <div>
             <label htmlFor="name" className="label">

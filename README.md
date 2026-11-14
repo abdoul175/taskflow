@@ -1,6 +1,6 @@
 # Taskflow
 
-A full-stack task manager with email/password authentication. Built with a React SPA, an Express JSON API, and SQLite — no external services required.
+A full-stack task manager with email/password authentication and optional Google sign-in. Built with a React SPA, an Express JSON API, and SQLite — no external services required for the core app.
 
 ![Stack](https://img.shields.io/badge/React_19-Vite_8-6366f1) ![Stack](https://img.shields.io/badge/Express_5-TypeScript-0ea5e9) ![Stack](https://img.shields.io/badge/SQLite-better--sqlite3-22c55e)
 
@@ -8,8 +8,9 @@ A full-stack task manager with email/password authentication. Built with a React
 
 - **Accounts** — register, sign in, sign out, persistent cookie sessions
 - **Email verification** — new accounts get a 6-digit code before they can sign in; changing your email requires re-verification
-- **Two-factor authentication** — TOTP setup with a QR code, one-time recovery codes, and a second step at sign-in
+- **Two-factor authentication** — TOTP setup with a QR code (Microsoft Authenticator, Google Authenticator, 1Password, Authy), one-time recovery codes, and a second step at sign-in
 - **Password reset** — “Forgot password?” emails a single-use link; other sessions are revoked after a reset
+- **Google sign-in** — optional “Continue with Google” using OAuth 2.0 with PKCE; existing accounts are linked by verified email, and 2FA still applies when enabled
 - **Profile** — update your name and email, and change your password from the sidebar
 - **Projects** — create and delete color-coded projects; every account starts with a “Personal” project
 - **Tasks** — title, description, status (To do / In progress / Done), priority, and due date
@@ -24,7 +25,7 @@ A full-stack task manager with email/password authentication. Built with a React
 | Frontend | React 19, Vite 8, TypeScript, Tailwind CSS 4       |
 | Backend  | Express 5, TypeScript, Zod validation              |
 | Database | SQLite via `better-sqlite3`                        |
-| Auth     | `scrypt` password hashing + opaque session cookies |
+| Auth     | `scrypt` password hashing + opaque session cookies; Google OAuth 2.0 (PKCE) |
 | Security | Email verification, TOTP two-factor auth, single-use reset links |
 | Email    | Nodemailer over SMTP; console preview when unconfigured |
 | Icons    | `lucide-react`                                     |
@@ -108,9 +109,37 @@ Use `npm run dev -w server` or `npm run dev -w client` to run one side alone.
 7. **Password reset** — single-use links are stored hashed, expire after 30 minutes, mark the email verified, and revoke every session. Reset requests are rate-limited and return the same generic message for unknown emails.
 8. **Authorization** — `requireAuth` resolves the cookie on every protected request; all project/task queries include the user ID so users can only ever touch their own rows.
 9. **Password changes** — verified against the stored hash, then re-hashed with a fresh salt. Every other session for the account is revoked, so a stolen session cannot outlive the change.
-10. **Hardening** — `helmet` headers, a 100 kB JSON body limit, auth rate limiting (30 attempts / 15 minutes / IP), stricter email-sending limits, and an origin allow-list on state-changing requests as defense-in-depth alongside SameSite cookies.
+10. **Google sign-in (optional)** — a standard OAuth 2.0 authorization-code flow with PKCE; the random state value and PKCE verifier travel in a short-lived httpOnly cookie. Profile data comes from Google’s OpenID userinfo endpoint, and only addresses Google reports as verified are accepted. Existing accounts are linked by email on first use; Google-created accounts get a random password hash and a default project. Accounts with 2FA still complete the TOTP step through a short-lived challenge cookie. No Google tokens are stored.
+11. **Hardening** — `helmet` headers, a 100 kB JSON body limit, auth rate limiting (30 attempts / 15 minutes / IP), stricter email-sending limits, and an origin allow-list on state-changing requests as defense-in-depth alongside SameSite cookies.
 
 Passwords are never stored or logged in plain text. No application secret is required: sessions, verification codes, reset tokens, and login challenges are all random values whose hashes are what the database stores.
+
+### Using Microsoft Authenticator
+
+Taskflow uses standard TOTP, so Microsoft Authenticator works without connecting a Microsoft or Azure account:
+
+1. Open **Profile → Two-factor authentication → Set up 2FA**.
+2. In Microsoft Authenticator, tap **+ → Other account**.
+3. Scan the QR code, or enter the setup key shown below it.
+4. Enter the 6-digit code from the app, then save your recovery codes.
+
+Microsoft Authenticator's phone sign-in and push approvals only work with Microsoft accounts; Taskflow uses the app's regular one-time-code mode.
+
+### Google sign-in setup
+
+Google sign-in is optional and disabled until credentials are configured, so local email/password flows keep working out of the box.
+
+1. In [Google Cloud Console](https://console.cloud.google.com/apis/credentials), create or select a project.
+2. Configure the OAuth consent screen (External is fine for testing; add test users while the app is in testing mode). Request the `openid`, `email`, and `profile` scopes.
+3. Create an **OAuth client ID → Web application**.
+4. Add the authorized redirect URI(s):
+   - Local production build: `http://localhost:4000/api/auth/google/callback`
+   - Vite dev server: `http://localhost:5173/api/auth/google/callback`
+   - Deployed app: `https://your-domain.example/api/auth/google/callback`
+5. Set `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` in `server/.env`. If the callback URL differs from `<app origin>/api/auth/google/callback`, also set `GOOGLE_REDIRECT_URI`; the value must exactly match one of the URIs registered in Google Cloud.
+6. Restart the API. The “Continue with Google” button appears on `/login` and `/register` when both values are present.
+
+The redirect URI is derived from `GOOGLE_REDIRECT_URI`, then `APP_URL`, then the request origin. Behind a reverse proxy, set `APP_URL` (and `APP_ORIGIN` if the proxy rewrites `Host`) so the derived callback matches Google’s registration. Google-created accounts can later set a password through “Forgot password?”; linked accounts keep their existing password and 2FA settings.
 
 ## API reference
 
@@ -133,6 +162,9 @@ All routes are prefixed with `/api`. Protected routes require the session cookie
 | `POST`   | `/auth/2fa/setup`     |  ✓   | Generates a TOTP secret, provisioning URI, and QR data URL |
 | `POST`   | `/auth/2fa/enable`    |  ✓   | `{ code }` → recovery codes            |
 | `POST`   | `/auth/2fa/disable`   |  ✓   | `{ password, code }`                   |
+| `GET`    | `/auth/providers`     |      | `{ google: boolean }` — which social providers are configured |
+| `GET`    | `/auth/google`        |      | Starts the Google OAuth redirect (state + PKCE) |
+| `GET`    | `/auth/google/callback` |    | Google callback; sets a session cookie or a 2FA challenge |
 | `GET`    | `/projects`           |  ✓   | Projects with task counts              |
 | `POST`   | `/projects`           |  ✓   | `{ name, color? }`                     |
 | `PATCH`  | `/projects/:id`       |  ✓   | `{ name?, color? }`                    |
@@ -153,7 +185,10 @@ Copy `server/.env.example` to `server/.env` if you need to override anything. Al
 | `PORT`          | `4000`                   | API port                                                    |
 | `DATABASE_PATH` | `server/data/taskflow.db`| SQLite file location                                        |
 | `APP_ORIGIN`    | —                        | Extra origin allowed to send mutating requests (e.g. `https://taskflow.example.com`) |
-| `APP_URL`       | request origin           | Public app URL used in emails when the request origin is unavailable |
+| `APP_URL`       | request origin           | Public app URL used in emails and to derive the Google callback when the request origin is unavailable |
+| `GOOGLE_CLIENT_ID` | —                     | Google OAuth client ID; enables Google sign-in with the secret |
+| `GOOGLE_CLIENT_SECRET` | —                  | Google OAuth client secret                                  |
+| `GOOGLE_REDIRECT_URI` | `<app origin>/api/auth/google/callback` | Fixed OAuth callback URL; must match Google Cloud exactly |
 | `SMTP_HOST`     | —                        | SMTP server host; when unset, emails are previewed in the console |
 | `SMTP_PORT`     | `587`                    | SMTP port (`465` enables implicit TLS)                      |
 | `SMTP_SECURE`   | `true` when port is 465  | Force implicit TLS                                          |
@@ -201,4 +236,4 @@ npm run seed
 
 ## Not included (deliberate starter scope)
 
-OAuth/social login, email-change notifications to the old address, and audit logs are not implemented. Add them before exposing the app to real users. The structure — separate route modules, Zod schemas, hashed one-time tokens, session helpers — is meant to make those additions straightforward.
+Email-change notifications to the old address and audit logs are not implemented. Add them before exposing the app to real users. The structure — separate route modules, Zod schemas, hashed one-time tokens, session helpers — is meant to make those additions straightforward. Google sign-in is implemented but stays hidden until you supply OAuth credentials.

@@ -22,8 +22,12 @@ export interface RegisterResult {
 interface AuthContextValue {
   user: User | null;
   loading: boolean;
+  googleEnabled: boolean;
   login: (email: string, password: string) => Promise<LoginResult>;
-  completeTwoFactor: (challengeToken: string, code: string) => Promise<void>;
+  completeTwoFactor: (
+    challengeToken: string | null,
+    code: string,
+  ) => Promise<void>;
   register: (
     name: string,
     email: string,
@@ -46,6 +50,24 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
+  const [googleEnabled, setGoogleEnabled] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    api.auth
+      .providers()
+      .then((providers) => {
+        if (!cancelled) setGoogleEnabled(providers.google);
+      })
+      .catch(() => {
+        // The email/password form still works if providers can't be loaded.
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -89,7 +111,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 
   const completeTwoFactor = useCallback(
-    async (challengeToken: string, code: string) => {
+    async (challengeToken: string | null, code: string) => {
       const nextUser = await api.auth.loginTwoFactor(challengeToken, code);
       setUser(nextUser);
     },
@@ -145,6 +167,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     () => ({
       user,
       loading,
+      googleEnabled,
       login,
       completeTwoFactor,
       register,
@@ -157,6 +180,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [
       user,
       loading,
+      googleEnabled,
       login,
       completeTwoFactor,
       register,

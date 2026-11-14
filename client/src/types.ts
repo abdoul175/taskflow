@@ -7,6 +7,7 @@ export interface User {
   email: string;
   emailVerified: boolean;
   twoFactorEnabled: boolean;
+  googleConnected: boolean;
   createdAt: string;
 }
 

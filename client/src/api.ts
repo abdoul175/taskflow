@@ -70,6 +70,10 @@ export interface LoginResponse {
   user?: User;
 }
 
+export interface AuthProvidersResponse {
+  google: boolean;
+}
+
 export interface RegisterResponse {
   verificationRequired: true;
   email: string;
@@ -102,16 +106,20 @@ export interface TwoFactorSetupResponse {
 
 export const api = {
   auth: {
+    providers: () => request<AuthProvidersResponse>('/auth/providers'),
     me: () => request<{ user: User }>('/auth/me').then((data) => data.user),
     login: (email: string, password: string) =>
       request<LoginResponse>('/auth/login', {
         method: 'POST',
         body: JSON.stringify({ email, password }),
       }),
-    loginTwoFactor: (challengeToken: string, code: string) =>
+    loginTwoFactor: (challengeToken: string | null, code: string) =>
       request<{ user: User }>('/auth/login/2fa', {
         method: 'POST',
-        body: JSON.stringify({ challengeToken, code }),
+        body: JSON.stringify({
+          ...(challengeToken ? { challengeToken } : {}),
+          code,
+        }),
       }).then((data) => data.user),
     register: (name: string, email: string, password: string) =>
       request<RegisterResponse>('/auth/register', {
