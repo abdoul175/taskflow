@@ -207,6 +207,27 @@ Copy `server/.env.example` to `server/.env` if you need to override anything. Al
 
 No SMTP server is required locally. Every outgoing message is printed to the API console, and verification codes and reset links are also returned to the UI when the server is not running in production. To deliver real email, set the `SMTP_*` variables; development-only codes disappear automatically once SMTP is configured or `NODE_ENV=production`.
 
+### Sending email with Resend
+
+1. Create an account at <https://resend.com> and add your domain under **Domains**. Copy the DKIM and SPF records it shows into your DNS provider and wait for the domain to be marked **Verified**. The MX record Resend suggests is for the `send` subdomain and does not affect your normal inbox.
+2. Create an API key under **API Keys** with **Sending access** permission.
+3. Configure these variables (in `server/.env` locally, or in Vercel under **Project Settings → Environment Variables**):
+
+   ```env
+   SMTP_HOST=smtp.resend.com
+   SMTP_PORT=465
+   SMTP_SECURE=true
+   SMTP_USER=resend
+   SMTP_PASS=re_your_api_key
+   SMTP_FROM="Taskflow <no-reply@yourdomain.com>"
+   ```
+
+   `SMTP_USER` must be literally `resend`; the API key is the password. `SMTP_FROM` must use the verified domain.
+
+4. Redeploy on Vercel, register an account, then check **Emails** in the Resend dashboard for delivery status.
+
+Until a domain is verified, Resend only delivers to the address that owns the Resend account, so you can smoke-test with `SMTP_FROM="Taskflow <onboarding@resend.dev>"`.
+
 > **2FA recovery:** users who lose their authenticator can sign in with a recovery code. If those are lost too, an administrator can clear `totp_enabled`, `totp_secret`, and the account's rows in `recovery_codes` directly in the database.
 
 ## Deploying to Vercel + Neon
