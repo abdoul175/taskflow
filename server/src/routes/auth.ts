@@ -562,71 +562,39 @@ authRouter.get('/google/callback', authLimiter, async (req, res) => {
       );
 
       if (existing) {
-        if (existing.google_id && existing.google_id !== profile.sub) {
+        // Never attach a Google identity to an existing Taskflow account.
+        // Otherwise anyone who controls a Google account with that address
+        // could take over an email/password account. Google-created accounts
+        // are still found above by google_id and can keep signing in.
+        fail(existing.google_id ? 'link-conflict' : 'email-exists');
+        return;
+      }
+
+      const passwordHash = await hashPassword(randomToken());
+      const userId = newId();
+      const now = new Date().toISOString();
+
+      try {
+        await db.transaction([
+          {
+            sql: `INSERT INTO users (id, name, email, password_hash, google_id, email_verified, created_at)
+                  VALUES (?, ?, ?, ?, ?, 1, ?)`,
+            params: [userId, displayName, email, passwordHash, profile.sub, now],
+          },
+          {
+            sql: 'INSERT INTO projects (id, user_id, name, color, created_at) VALUES (?, ?, ?, ?, ?)',
+            params: [newId(), userId, 'Personal', '#6366f1', now],
+          },
+        ]);
+      } catch (error) {
+        if (isUniqueViolation(error)) {
           fail('link-conflict');
           return;
         }
-
-        const wasUnverified = existing.email_verified === 0;
-        const passwordHash = wasUnverified
-          ? await hashPassword(randomToken())
-          : existing.password_hash;
-
-        const statements: Statement[] = [
-          {
-            sql: 'UPDATE users SET google_id = ?, email_verified = 1, password_hash = ? WHERE id = ?',
-            params: [profile.sub, passwordHash, existing.id],
-          },
-        ];
-
-        if (wasUnverified) {
-          // Google has now proven ownership of an address that was only
-          // pre-registered. Invalidate the old password and sessions.
-          statements.push(
-            {
-              sql: 'DELETE FROM sessions WHERE user_id = ?',
-              params: [existing.id],
-            },
-            {
-              sql: 'DELETE FROM login_challenges WHERE user_id = ?',
-              params: [existing.id],
-            },
-            {
-              sql: 'DELETE FROM email_verification_tokens WHERE user_id = ?',
-              params: [existing.id],
-            },
-          );
-        }
-
-        await db.transaction(statements);
-        user = (await getUserRow(existing.id))!;
-      } else {
-        const passwordHash = await hashPassword(randomToken());
-        const userId = newId();
-        const now = new Date().toISOString();
-
-        try {
-          await db.transaction([
-            {
-              sql: `INSERT INTO users (id, name, email, password_hash, google_id, email_verified, created_at)
-                    VALUES (?, ?, ?, ?, ?, 1, ?)`,
-              params: [userId, displayName, email, passwordHash, profile.sub, now],
-            },
-            {
-              sql: 'INSERT INTO projects (id, user_id, name, color, created_at) VALUES (?, ?, ?, ?, ?)',
-              params: [newId(), userId, 'Personal', '#6366f1', now],
-            },
-          ]);
-        } catch (error) {
-          if (isUniqueViolation(error)) {
-            fail('link-conflict');
-            return;
-          }
-          throw error;
-        }
-
-        user = (await getUserRow(userId))!;
+        throw error;
       }
+
+      user = (await getUserRow(userId))!;
     }
 
     if (!user) {

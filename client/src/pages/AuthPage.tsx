@@ -55,13 +55,15 @@ export default function AuthPage({ mode }: { mode: 'login' | 'register' }) {
   const oauthError =
     oauth === 'cancelled'
       ? 'Google sign-in was cancelled.'
-      : oauth === 'error'
-        ? 'Google sign-in could not be completed. Please try again.'
-        : oauth === 'unavailable'
-          ? 'Google sign-in is not configured on this server yet.'
-          : oauth === 'link-conflict'
-            ? 'That email address is already linked to a different Google account.'
-            : null;
+      : oauth === 'email-exists'
+        ? 'An account with that email already exists. Sign in with your password, or use a different Google account.'
+        : oauth === 'error'
+          ? 'Google sign-in could not be completed. Please try again.'
+          : oauth === 'unavailable'
+            ? 'Google sign-in is not configured on this server yet.'
+            : oauth === 'link-conflict'
+              ? 'That email address is already linked to a different Google account.'
+              : null;
 
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');

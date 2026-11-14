@@ -10,7 +10,7 @@ A full-stack task manager with email/password authentication and optional Google
 - **Email verification** — new accounts get a 6-digit code before they can sign in; changing your email requires re-verification
 - **Two-factor authentication** — TOTP setup with a QR code (Microsoft Authenticator, Google Authenticator, 1Password, Authy), one-time recovery codes, and a second step at sign-in
 - **Password reset** — “Forgot password?” emails a single-use link; other sessions are revoked after a reset
-- **Google sign-in** — optional “Continue with Google” using OAuth 2.0 with PKCE; existing accounts are linked by verified email, and 2FA still applies when enabled
+- **Google sign-in** — optional “Continue with Google” using OAuth 2.0 with PKCE; it creates new accounts or signs in to accounts already linked to Google, never attaching to an existing email/password account. 2FA still applies when enabled
 - **Profile** — update your name and email, and change your password from the sidebar
 - **Projects** — create and delete color-coded projects; every account starts with a “Personal” project
 - **Tasks** — title, description, status (To do / In progress / Done), priority, and due date
@@ -115,7 +115,7 @@ Use `npm run dev -w server` or `npm run dev -w client` to run one side alone.
 7. **Password reset** — single-use links are stored hashed, expire after 30 minutes, mark the email verified, and revoke every session. Reset requests are rate-limited and return the same generic message for unknown emails.
 8. **Authorization** — `requireAuth` resolves the cookie on every protected request; all project/task queries include the user ID so users can only ever touch their own rows.
 9. **Password changes** — verified against the stored hash, then re-hashed with a fresh salt. Every other session for the account is revoked, so a stolen session cannot outlive the change.
-10. **Google sign-in (optional)** — a standard OAuth 2.0 authorization-code flow with PKCE; the random state value and PKCE verifier travel in a short-lived httpOnly cookie. Profile data comes from Google’s OpenID userinfo endpoint, and only addresses Google reports as verified are accepted. Existing accounts are linked by email on first use; Google-created accounts get a random password hash and a default project. Accounts with 2FA still complete the TOTP step through a short-lived challenge cookie. No Google tokens are stored.
+10. **Google sign-in (optional)** — a standard OAuth 2.0 authorization-code flow with PKCE; the random state value and PKCE verifier travel in a short-lived httpOnly cookie. Profile data comes from Google’s OpenID userinfo endpoint, and only addresses Google reports as verified are accepted. A Google sign-in only creates a new account when the email is not already in the database; when an email/password account already owns that address, the attempt is rejected (`email-exists`) instead of linked, so Google can never take over an existing account. Google-created accounts get a random password hash and a default project. Accounts with 2FA still complete the TOTP step through a short-lived challenge cookie. No Google tokens are stored.
 11. **Hardening** — `helmet` headers, a 100 kB JSON body limit, auth rate limiting (30 attempts / 15 minutes / IP), stricter email-sending limits, and an origin allow-list on state-changing requests as defense-in-depth alongside SameSite cookies.
 
 Passwords are never stored or logged in plain text. No application secret is required: sessions, verification codes, reset tokens, and login challenges are all random values whose hashes are what the database stores.
@@ -145,7 +145,7 @@ Google sign-in is optional and disabled until credentials are configured, so loc
 5. Set `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` in `server/.env`. If the callback URL differs from `<app origin>/api/auth/google/callback`, also set `GOOGLE_REDIRECT_URI`; the value must exactly match one of the URIs registered in Google Cloud.
 6. Restart the API. The “Continue with Google” button appears on `/login` and `/register` when both values are present.
 
-The redirect URI is derived from `GOOGLE_REDIRECT_URI`, then `APP_URL`, then the request origin. Behind a reverse proxy, set `APP_URL` (and `APP_ORIGIN` if the proxy rewrites `Host`) so the derived callback matches Google’s registration. Google-created accounts can later set a password through “Forgot password?”; linked accounts keep their existing password and 2FA settings.
+The redirect URI is derived from `GOOGLE_REDIRECT_URI`, then `APP_URL`, then the request origin. Behind a reverse proxy, set `APP_URL` (and `APP_ORIGIN` if the proxy rewrites `Host`) so the derived callback matches Google’s registration. Google-created accounts can later set a password through “Forgot password?”. Google sign-in never attaches to an existing email/password account.
 
 ## API reference
 
