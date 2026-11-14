@@ -24,6 +24,8 @@ const databaseUrl =
   process.env.DATABASE_URL?.trim() ||
   process.env.POSTGRES_URL?.trim() ||
   process.env.POSTGRES_PRISMA_URL?.trim() ||
+  process.env.DATABASE_URL_UNPOOLED?.trim() ||
+  process.env.POSTGRES_URL_NON_POOLING?.trim() ||
   '';
 
 const vercelHost =

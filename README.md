@@ -187,7 +187,7 @@ Copy `server/.env.example` to `server/.env` if you need to override anything. Al
 | Variable        | Default                  | Purpose                                                     |
 | --------------- | ------------------------ | ----------------------------------------------------------- |
 | `PORT`          | `4000`                   | API port                                                    |
-| `DATABASE_URL`  | — (local PGlite)         | PostgreSQL connection string. `POSTGRES_URL` and `POSTGRES_PRISMA_URL` are accepted as fallbacks; the Vercel Neon integration sets one of them automatically. |
+| `DATABASE_URL`  | — (local PGlite)         | PostgreSQL connection string. The Neon/Vercel integrations may name it `POSTGRES_URL`, `POSTGRES_PRISMA_URL`, `DATABASE_URL_UNPOOLED`, or `POSTGRES_URL_NON_POOLING`; all are accepted. |
 | `PGLITE_DATA_DIR` | `server/data/pglite`   | Local embedded Postgres directory used when `DATABASE_URL` is unset |
 | `APP_ORIGIN`    | —                        | Extra origin allowed to send mutating requests (e.g. `https://taskflow.example.com`) |
 | `APP_URL`       | request origin           | Public app URL used in emails and to derive the Google callback when the request origin is unavailable |
