@@ -20,9 +20,6 @@ import { ApiError, getErrorMessage } from '../api';
 import { useAuth } from '../auth';
 import { AuthShell } from '../components/AuthShell';
 
-const DEMO_EMAIL = 'demo@taskflow.dev';
-const DEMO_PASSWORD = 'taskflow123';
-
 function GoogleIcon() {
   return (
     <svg viewBox="0 0 48 48" className="h-4 w-4" aria-hidden="true">
@@ -147,12 +144,6 @@ export default function AuthPage({ mode }: { mode: 'login' | 'register' }) {
     } finally {
       setVerifying(false);
     }
-  }
-
-  function fillDemoCredentials() {
-    setEmail(DEMO_EMAIL);
-    setPassword(DEMO_PASSWORD);
-    setError(null);
   }
 
   function backToCredentials() {
@@ -400,28 +391,6 @@ export default function AuthPage({ mode }: { mode: 'login' | 'register' }) {
           )}
         </button>
       </form>
-
-      {isLogin && (
-        <div className="mt-5 rounded-xl border border-dashed border-white/10 bg-white/[0.02] p-3.5">
-          <div className="flex items-center justify-between gap-3">
-            <div className="min-w-0">
-              <p className="text-xs font-semibold text-slate-300">
-                Just exploring?
-              </p>
-              <p className="mt-0.5 truncate text-xs text-slate-500">
-                {DEMO_EMAIL} · {DEMO_PASSWORD}
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={fillDemoCredentials}
-              className="shrink-0 text-xs font-semibold text-indigo-300 transition hover:text-indigo-200"
-            >
-              Use demo
-            </button>
-          </div>
-        </div>
-      )}
 
       <p className="mt-6 text-center text-sm text-slate-500">
         {isLogin ? 'New here?' : 'Already have an account?'}{' '}
