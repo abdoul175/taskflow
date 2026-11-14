@@ -377,11 +377,27 @@ authRouter.get('/providers', (_req, res) => {
   res.json({ google: googleOAuthEnabled });
 });
 
-authRouter.get('/google', authLimiter, (req, res) => {
+authRouter.get('/google', authLimiter, async (req, res) => {
   if (!googleOAuthEnabled) {
     res.redirect('/login?oauth=unavailable');
     return;
   }
+
+  // Signing in with Google starts a fresh authentication attempt. Drop any
+  // session this browser still has so cancelling the Google account chooser
+  // returns to the login page instead of jumping back to the dashboard.
+  const existingToken = req.cookies?.[config.cookieName] as string | undefined;
+  if (existingToken) {
+    try {
+      await deleteSession(existingToken);
+    } catch (error) {
+      console.error(
+        'Could not clear the previous session before Google sign-in:',
+        error,
+      );
+    }
+  }
+  res.clearCookie(config.cookieName, clearedSessionCookieOptions);
 
   const state = randomToken();
   const codeVerifier = randomToken();
@@ -412,11 +428,21 @@ authRouter.get('/google', authLimiter, (req, res) => {
 authRouter.get('/google/callback', authLimiter, async (req, res) => {
   const fail = (reason = 'error') => {
     clearOAuthStateCookie(res);
+    res.clearCookie(config.cookieName, clearedSessionCookieOptions);
     res.redirect(`/login?oauth=${reason}`);
   };
 
   if (!googleOAuthEnabled) {
     fail('unavailable');
+    return;
+  }
+
+  // Google sends ?error=access_denied when the user cancels the account
+  // chooser or the consent screen. Do not treat that as a broken sign-in.
+  const oauthError =
+    typeof req.query.error === 'string' ? req.query.error : '';
+  if (oauthError) {
+    fail(oauthError === 'access_denied' ? 'cancelled' : 'error');
     return;
   }
 

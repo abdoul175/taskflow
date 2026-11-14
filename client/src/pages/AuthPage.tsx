@@ -45,20 +45,23 @@ function GoogleIcon() {
 
 export default function AuthPage({ mode }: { mode: 'login' | 'register' }) {
   const isLogin = mode === 'login';
-  const { user, googleEnabled, login, register, completeTwoFactor } = useAuth();
+  const { user, loading, googleEnabled, login, register, completeTwoFactor } =
+    useAuth();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const oauth = searchParams.get('oauth');
   const googleTwoFactor = oauth === '2fa';
 
   const oauthError =
-    oauth === 'error'
-      ? 'Google sign-in could not be completed. Please try again.'
-      : oauth === 'unavailable'
-        ? 'Google sign-in is not configured on this server yet.'
-        : oauth === 'link-conflict'
-          ? 'That email address is already linked to a different Google account.'
-          : null;
+    oauth === 'cancelled'
+      ? 'Google sign-in was cancelled.'
+      : oauth === 'error'
+        ? 'Google sign-in could not be completed. Please try again.'
+        : oauth === 'unavailable'
+          ? 'Google sign-in is not configured on this server yet.'
+          : oauth === 'link-conflict'
+            ? 'That email address is already linked to a different Google account.'
+            : null;
 
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
@@ -75,7 +78,11 @@ export default function AuthPage({ mode }: { mode: 'login' | 'register' }) {
   const [codeError, setCodeError] = useState<string | null>(null);
   const [verifying, setVerifying] = useState(false);
 
-  if (user) {
+  // Never bounce to the dashboard while the session is still being checked or
+  // while the URL is reporting the result of a Google sign-in attempt. In both
+  // cases the user must stay on the login page (a cancelled Google flow should
+  // not reveal a previously authenticated view).
+  if (user && !loading && !oauth) {
     return <Navigate to="/" replace />;
   }
 
@@ -255,7 +262,19 @@ export default function AuthPage({ mode }: { mode: 'login' | 'register' }) {
 
       {googleEnabled && (
         <div className="mt-7">
-          <a href="/api/auth/google" className="btn-secondary w-full py-3">
+          <a
+            href="/api/auth/google"
+            aria-disabled={loading}
+            onClick={(event) => {
+              // Do not start OAuth before we know whether this browser is
+              // already signed in; otherwise a cancelled attempt can reveal
+              // the dashboard.
+              if (loading) event.preventDefault();
+            }}
+            className={`btn-secondary w-full py-3 ${
+              loading ? 'pointer-events-none opacity-60' : ''
+            }`}
+          >
             <GoogleIcon />
             {isLogin ? 'Continue with Google' : 'Sign up with Google'}
           </a>

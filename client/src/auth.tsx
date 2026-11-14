@@ -89,6 +89,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
+  // Browsers may restore this page from the back-forward cache when the user
+  // returns from Google. Re-check the session so a stale authenticated state
+  // cannot survive a cancelled sign-in.
+  useEffect(() => {
+    function handlePageShow(event: PageTransitionEvent) {
+      if (!event.persisted) return;
+
+      setLoading(true);
+      api.auth
+        .me()
+        .then((nextUser) => setUser(nextUser))
+        .catch(() => setUser(null))
+        .finally(() => setLoading(false));
+    }
+
+    window.addEventListener('pageshow', handlePageShow);
+    return () => window.removeEventListener('pageshow', handlePageShow);
+  }, []);
+
   const login = useCallback(
     async (email: string, password: string): Promise<LoginResult> => {
       const result = await api.auth.login(email, password);
