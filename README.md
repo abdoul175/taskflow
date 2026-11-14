@@ -238,7 +238,7 @@ The repository is ready for Vercel's Git integration. The Express API runs as a 
 
 1. Go to <https://vercel.com/new> and import `abdoul175/taskflow`.
 2. Keep the root directory as the repository root.
-3. Framework preset: **Other** (the repo includes `vercel.json`, so the build command and output directory are already set to `npm run build` and `public`).
+3. Framework preset: **Other** (the repo includes `vercel.json`, which pins the framework to Express, sets the build command to `npm run build`, and the output directory to `public`).
 4. Don't deploy yet — add the database and environment variables first.
 
 ### 2. Add Neon Postgres
