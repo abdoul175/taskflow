@@ -9,11 +9,15 @@ import type {
 
 export class ApiError extends Error {
   status: number;
+  code?: string;
+  payload?: unknown;
 
-  constructor(message: string, status: number) {
+  constructor(message: string, status: number, code?: string, payload?: unknown) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
+    this.code = code;
+    this.payload = payload;
   }
 }
 
@@ -38,13 +42,15 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   const data = (await response.json().catch(() => null)) as
-    | { error?: string }
+    | { error?: string; code?: string; [key: string]: unknown }
     | null;
 
   if (!response.ok) {
     throw new ApiError(
       data?.error ?? 'Something went wrong. Please try again.',
       response.status,
+      data?.code,
+      data,
     );
   }
 
@@ -58,28 +64,101 @@ export function getErrorMessage(
   return error instanceof ApiError ? error.message : fallback;
 }
 
+export interface LoginResponse {
+  requires2fa?: boolean;
+  challengeToken?: string;
+  user?: User;
+}
+
+export interface RegisterResponse {
+  verificationRequired: true;
+  email: string;
+  devCode?: string;
+}
+
+export interface VerificationResponse {
+  ok: true;
+  message: string;
+  devCode?: string;
+}
+
+export interface ForgotPasswordResponse {
+  ok: true;
+  message: string;
+  devResetUrl?: string;
+}
+
+export interface ProfileResponse {
+  user: User;
+  verificationRequired?: boolean;
+  devCode?: string;
+}
+
+export interface TwoFactorSetupResponse {
+  secret: string;
+  otpauthUrl: string;
+  qrDataUrl: string;
+}
+
 export const api = {
   auth: {
     me: () => request<{ user: User }>('/auth/me').then((data) => data.user),
     login: (email: string, password: string) =>
-      request<{ user: User }>('/auth/login', {
+      request<LoginResponse>('/auth/login', {
         method: 'POST',
         body: JSON.stringify({ email, password }),
+      }),
+    loginTwoFactor: (challengeToken: string, code: string) =>
+      request<{ user: User }>('/auth/login/2fa', {
+        method: 'POST',
+        body: JSON.stringify({ challengeToken, code }),
       }).then((data) => data.user),
     register: (name: string, email: string, password: string) =>
-      request<{ user: User }>('/auth/register', {
+      request<RegisterResponse>('/auth/register', {
         method: 'POST',
         body: JSON.stringify({ name, email, password }),
+      }),
+    verifyEmail: (email: string, code: string) =>
+      request<{ user: User }>('/auth/verify-email', {
+        method: 'POST',
+        body: JSON.stringify({ email, code }),
       }).then((data) => data.user),
+    resendVerification: (email: string) =>
+      request<VerificationResponse>('/auth/resend-verification', {
+        method: 'POST',
+        body: JSON.stringify({ email }),
+      }),
+    forgotPassword: (email: string) =>
+      request<ForgotPasswordResponse>('/auth/forgot-password', {
+        method: 'POST',
+        body: JSON.stringify({ email }),
+      }),
+    resetPassword: (token: string, password: string) =>
+      request<void>('/auth/reset-password', {
+        method: 'POST',
+        body: JSON.stringify({ token, password }),
+      }),
     updateProfile: (name: string, email: string) =>
-      request<{ user: User }>('/auth/profile', {
+      request<ProfileResponse>('/auth/profile', {
         method: 'PATCH',
         body: JSON.stringify({ name, email }),
-      }).then((data) => data.user),
+      }),
     changePassword: (currentPassword: string, newPassword: string) =>
       request<void>('/auth/change-password', {
         method: 'POST',
         body: JSON.stringify({ currentPassword, newPassword }),
+      }),
+    startTwoFactorSetup: () =>
+      request<TwoFactorSetupResponse>('/auth/2fa/setup', { method: 'POST' }),
+    enableTwoFactor: (code: string) =>
+      request<{ recoveryCodes: string[] }>('/auth/2fa/enable', {
+        method: 'POST',
+        body: JSON.stringify({ code }),
+      }),
+    disableTwoFactor: (password: string, code: string) =>
+      request<void>('/auth/2fa/disable', {
+        method: 'POST',
+        body: JSON.stringify({ password, code }),
       }),
     logout: () => request<void>('/auth/logout', { method: 'POST' }),
   },

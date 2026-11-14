@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import {
   CheckCircle2,
+  Copy,
   Eye,
   EyeOff,
   Loader2,
@@ -9,7 +10,7 @@ import {
   ShieldCheck,
   UserRound,
 } from 'lucide-react';
-import { api, getErrorMessage } from '../api';
+import { api, getErrorMessage, type TwoFactorSetupResponse } from '../api';
 import { useAuth } from '../auth';
 import { Modal } from './Modal';
 
@@ -101,7 +102,7 @@ function SuccessMessage({ children }: { children: string }) {
 }
 
 export function ProfileModal({ open, onClose }: ProfileModalProps) {
-  const { user, updateProfile } = useAuth();
+  const { user, updateProfile, refreshUser } = useAuth();
 
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
@@ -115,6 +116,17 @@ export function ProfileModal({ open, onClose }: ProfileModalProps) {
   const [passwordSaving, setPasswordSaving] = useState(false);
   const [passwordError, setPasswordError] = useState<string | null>(null);
   const [passwordSaved, setPasswordSaved] = useState(false);
+
+  const [twoFactorBusy, setTwoFactorBusy] = useState(false);
+  const [twoFactorError, setTwoFactorError] = useState<string | null>(null);
+  const [twoFactorSaved, setTwoFactorSaved] = useState<string | null>(null);
+  const [setup, setSetup] = useState<TwoFactorSetupResponse | null>(null);
+  const [setupCode, setSetupCode] = useState('');
+  const [recoveryCodes, setRecoveryCodes] = useState<string[] | null>(null);
+  const [codesCopied, setCodesCopied] = useState(false);
+  const [disableOpen, setDisableOpen] = useState(false);
+  const [disablePassword, setDisablePassword] = useState('');
+  const [disableCode, setDisableCode] = useState('');
 
   // Reset the forms each time the dialog is opened.
   useEffect(() => {
@@ -130,6 +142,17 @@ export function ProfileModal({ open, onClose }: ProfileModalProps) {
     setConfirmPassword('');
     setPasswordError(null);
     setPasswordSaved(false);
+
+    setTwoFactorBusy(false);
+    setTwoFactorError(null);
+    setTwoFactorSaved(null);
+    setSetup(null);
+    setSetupCode('');
+    setRecoveryCodes(null);
+    setCodesCopied(false);
+    setDisableOpen(false);
+    setDisablePassword('');
+    setDisableCode('');
   }, [open]);
 
   const profileDirty =
@@ -165,7 +188,15 @@ export function ProfileModal({ open, onClose }: ProfileModalProps) {
     setProfileSaved(false);
 
     try {
-      await updateProfile(trimmedName, trimmedEmail);
+      const result = await updateProfile(trimmedName, trimmedEmail);
+
+      if (result.verificationRequired) {
+        // The new address must be verified; ProtectedRoute sends the user to
+        // the verification screen right away.
+        onClose();
+        return;
+      }
+
       setName(trimmedName);
       setEmail(trimmedEmail.toLowerCase());
       setProfileSaved(true);
@@ -210,6 +241,87 @@ export function ProfileModal({ open, onClose }: ProfileModalProps) {
       );
     } finally {
       setPasswordSaving(false);
+    }
+  }
+
+  async function handleStartTwoFactor() {
+    setTwoFactorBusy(true);
+    setTwoFactorError(null);
+    setTwoFactorSaved(null);
+
+    try {
+      const data = await api.auth.startTwoFactorSetup();
+      setSetup(data);
+      setSetupCode('');
+    } catch (setupError) {
+      setTwoFactorError(
+        getErrorMessage(
+          setupError,
+          'Could not start two-factor setup. Please try again.',
+        ),
+      );
+    } finally {
+      setTwoFactorBusy(false);
+    }
+  }
+
+  async function handleEnableTwoFactor(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setTwoFactorBusy(true);
+    setTwoFactorError(null);
+
+    try {
+      const result = await api.auth.enableTwoFactor(setupCode.trim());
+      setRecoveryCodes(result.recoveryCodes);
+      setSetup(null);
+      setSetupCode('');
+      setCodesCopied(false);
+      await refreshUser();
+      setTwoFactorSaved('Two-factor authentication is now on.');
+    } catch (enableError) {
+      setTwoFactorError(
+        getErrorMessage(enableError, 'Could not enable two-factor authentication.'),
+      );
+    } finally {
+      setTwoFactorBusy(false);
+    }
+  }
+
+  async function handleDisableTwoFactor(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setTwoFactorBusy(true);
+    setTwoFactorError(null);
+    setTwoFactorSaved(null);
+
+    try {
+      await api.auth.disableTwoFactor(disablePassword, disableCode.trim());
+      await refreshUser();
+      setDisableOpen(false);
+      setDisablePassword('');
+      setDisableCode('');
+      setTwoFactorSaved('Two-factor authentication is now off.');
+    } catch (disableError) {
+      setTwoFactorError(
+        getErrorMessage(
+          disableError,
+          'Could not disable two-factor authentication.',
+        ),
+      );
+    } finally {
+      setTwoFactorBusy(false);
+    }
+  }
+
+  async function handleCopyRecoveryCodes() {
+    if (!recoveryCodes) return;
+
+    try {
+      await navigator.clipboard.writeText(recoveryCodes.join('\n'));
+      setCodesCopied(true);
+    } catch {
+      setTwoFactorError(
+        'Could not copy the codes. Select and copy them manually.',
+      );
     }
   }
 
@@ -410,6 +522,279 @@ export function ProfileModal({ open, onClose }: ProfileModalProps) {
           </button>
         </div>
       </form>
+
+      <div className="my-6 h-px bg-white/[0.06]" aria-hidden="true" />
+
+      <section className="space-y-4">
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <ShieldCheck
+              className="h-4 w-4 text-indigo-300"
+              aria-hidden="true"
+            />
+            <h3 className="text-sm font-semibold text-slate-200">
+              Two-factor authentication
+            </h3>
+          </div>
+          <span
+            className={`rounded-md border px-2 py-0.5 text-[11px] font-semibold ${
+              user?.twoFactorEnabled
+                ? 'border-emerald-400/20 bg-emerald-400/10 text-emerald-300'
+                : 'border-white/10 bg-white/[0.04] text-slate-500'
+            }`}
+          >
+            {user?.twoFactorEnabled ? 'Enabled' : 'Off'}
+          </span>
+        </div>
+
+        {recoveryCodes ? (
+          <div className="rounded-xl border border-amber-500/20 bg-amber-500/[0.06] p-4">
+            <p className="text-sm font-semibold text-amber-200">
+              Save your recovery codes
+            </p>
+            <p className="mt-1 text-xs leading-relaxed text-amber-200/70">
+              Each code works once if you lose access to your authenticator
+              app. This is the only time they will be shown.
+            </p>
+            <div className="mt-3 grid grid-cols-2 gap-2">
+              {recoveryCodes.map((recovery) => (
+                <code
+                  key={recovery}
+                  className="rounded-lg border border-amber-500/15 bg-black/25 px-2.5 py-1.5 text-center font-mono text-xs tracking-wider text-amber-100"
+                >
+                  {recovery}
+                </code>
+              ))}
+            </div>
+            <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+              <button
+                type="button"
+                onClick={() => void handleCopyRecoveryCodes()}
+                className="btn-ghost px-2.5 py-1.5 text-xs"
+              >
+                {codesCopied ? (
+                  <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" />
+                ) : (
+                  <Copy className="h-3.5 w-3.5" aria-hidden="true" />
+                )}
+                {codesCopied ? 'Copied' : 'Copy codes'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setRecoveryCodes(null)}
+                className="btn-secondary px-3 py-1.5 text-xs"
+              >
+                I saved them
+              </button>
+            </div>
+          </div>
+        ) : user?.twoFactorEnabled ? (
+          <>
+            <p className="text-sm leading-relaxed text-slate-400">
+              Signing in requires a code from your authenticator app or one of
+              your recovery codes.
+            </p>
+
+            {twoFactorError && (
+              <div
+                role="alert"
+                className="rounded-xl border border-rose-500/20 bg-rose-500/10 px-3.5 py-2.5 text-sm text-rose-300"
+              >
+                {twoFactorError}
+              </div>
+            )}
+
+            {twoFactorSaved && <SuccessMessage>{twoFactorSaved}</SuccessMessage>}
+
+            {disableOpen ? (
+              <form
+                onSubmit={handleDisableTwoFactor}
+                className="space-y-3 rounded-xl border border-white/[0.06] bg-white/[0.02] p-3.5"
+              >
+                <PasswordField
+                  id="disable-2fa-password"
+                  label="Password"
+                  value={disablePassword}
+                  minLength={1}
+                  autoComplete="current-password"
+                  placeholder="Your password"
+                  onChange={setDisablePassword}
+                />
+                <div>
+                  <label htmlFor="disable-2fa-code" className="label">
+                    Authentication code
+                  </label>
+                  <input
+                    id="disable-2fa-code"
+                    type="text"
+                    required
+                    minLength={6}
+                    maxLength={20}
+                    autoComplete="one-time-code"
+                    placeholder="123456 or recovery code"
+                    className="input text-center font-mono tracking-[0.2em]"
+                    value={disableCode}
+                    onChange={(event) => setDisableCode(event.target.value)}
+                  />
+                </div>
+                <div className="flex justify-end gap-2">
+                  <button
+                    type="button"
+                    className="btn-secondary px-3 py-2 text-xs"
+                    onClick={() => {
+                      setDisableOpen(false);
+                      setDisablePassword('');
+                      setDisableCode('');
+                      setTwoFactorError(null);
+                    }}
+                    disabled={twoFactorBusy}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    className="btn-danger px-3 py-2 text-xs"
+                    disabled={
+                      twoFactorBusy || !disablePassword || disableCode.length < 6
+                    }
+                  >
+                    {twoFactorBusy && (
+                      <Loader2
+                        className="h-3.5 w-3.5 animate-spin"
+                        aria-hidden="true"
+                      />
+                    )}
+                    Turn off 2FA
+                  </button>
+                </div>
+              </form>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setDisableOpen(true)}
+                className="btn-secondary"
+              >
+                Turn off 2FA
+              </button>
+            )}
+          </>
+        ) : setup ? (
+          <>
+            <p className="text-sm leading-relaxed text-slate-400">
+              Scan the QR code with Google Authenticator, 1Password, Authy, or
+              any TOTP app, then enter the 6-digit code it shows.
+            </p>
+
+            <div className="flex flex-col gap-4 rounded-xl border border-white/[0.06] bg-white/[0.02] p-3.5 sm:flex-row">
+              <img
+                src={setup.qrDataUrl}
+                alt="QR code for adding Taskflow to an authenticator app"
+                className="h-40 w-40 shrink-0 self-center rounded-lg bg-white p-1"
+              />
+              <div className="min-w-0 flex-1">
+                <p className="text-xs text-slate-500">
+                  Can&apos;t scan? Enter this key manually:
+                </p>
+                <code className="mt-1 block break-all rounded-lg border border-white/[0.06] bg-black/30 px-2.5 py-2 font-mono text-[11px] leading-relaxed tracking-wider text-slate-300">
+                  {setup.secret}
+                </code>
+
+                <form onSubmit={handleEnableTwoFactor} className="mt-3 space-y-2">
+                  <label htmlFor="enable-2fa-code" className="label">
+                    6-digit code
+                  </label>
+                  <input
+                    id="enable-2fa-code"
+                    type="text"
+                    required
+                    minLength={6}
+                    maxLength={6}
+                    inputMode="numeric"
+                    autoComplete="one-time-code"
+                    placeholder="123456"
+                    className="input text-center font-mono text-lg tracking-[0.3em]"
+                    value={setupCode}
+                    onChange={(event) =>
+                      setSetupCode(
+                        event.target.value.replace(/\D/g, '').slice(0, 6),
+                      )
+                    }
+                  />
+                  <button
+                    type="submit"
+                    className="btn-primary w-full"
+                    disabled={twoFactorBusy || setupCode.length !== 6}
+                  >
+                    {twoFactorBusy ? (
+                      <Loader2
+                        className="h-4 w-4 animate-spin"
+                        aria-hidden="true"
+                      />
+                    ) : (
+                      <ShieldCheck className="h-4 w-4" aria-hidden="true" />
+                    )}
+                    Verify and enable
+                  </button>
+                </form>
+              </div>
+            </div>
+
+            {twoFactorError && (
+              <div
+                role="alert"
+                className="rounded-xl border border-rose-500/20 bg-rose-500/10 px-3.5 py-2.5 text-sm text-rose-300"
+              >
+                {twoFactorError}
+              </div>
+            )}
+
+            <button
+              type="button"
+              onClick={() => {
+                setSetup(null);
+                setSetupCode('');
+                setTwoFactorError(null);
+              }}
+              className="btn-ghost px-2.5 py-1.5 text-xs"
+              disabled={twoFactorBusy}
+            >
+              Cancel setup
+            </button>
+          </>
+        ) : (
+          <>
+            <p className="text-sm leading-relaxed text-slate-400">
+              Add a second step at sign-in with an authenticator app. You will
+              also get one-time recovery codes.
+            </p>
+
+            {twoFactorError && (
+              <div
+                role="alert"
+                className="rounded-xl border border-rose-500/20 bg-rose-500/10 px-3.5 py-2.5 text-sm text-rose-300"
+              >
+                {twoFactorError}
+              </div>
+            )}
+
+            {twoFactorSaved && <SuccessMessage>{twoFactorSaved}</SuccessMessage>}
+
+            <button
+              type="button"
+              onClick={() => void handleStartTwoFactor()}
+              className="btn-secondary"
+              disabled={twoFactorBusy}
+            >
+              {twoFactorBusy ? (
+                <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+              ) : (
+                <ShieldCheck className="h-4 w-4" aria-hidden="true" />
+              )}
+              Set up 2FA
+            </button>
+          </>
+        )}
+      </section>
     </Modal>
   );
 }

@@ -3,6 +3,10 @@ export interface UserRow {
   name: string;
   email: string;
   password_hash: string;
+  email_verified: number;
+  totp_secret: string | null;
+  totp_enabled: number;
+  totp_last_step: number | null;
   created_at: string;
 }
 
@@ -35,6 +39,8 @@ export interface PublicUser {
   id: string;
   name: string;
   email: string;
+  emailVerified: boolean;
+  twoFactorEnabled: boolean;
   createdAt: string;
 }
 
@@ -43,6 +49,8 @@ export function toPublicUser(row: UserRow): PublicUser {
     id: row.id,
     name: row.name,
     email: row.email,
+    emailVerified: row.email_verified === 1,
+    twoFactorEnabled: row.totp_enabled === 1,
     createdAt: row.created_at,
   };
 }

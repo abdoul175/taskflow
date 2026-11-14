@@ -4,6 +4,9 @@ import { useAuth } from './auth';
 import { LogoMark } from './components/Logo';
 import AuthPage from './pages/AuthPage';
 import Dashboard from './pages/Dashboard';
+import ForgotPasswordPage from './pages/ForgotPasswordPage';
+import ResetPasswordPage from './pages/ResetPasswordPage';
+import VerifyEmailPage from './pages/VerifyEmailPage';
 
 function FullPageLoader({ label }: { label: string }) {
   return (
@@ -21,6 +24,7 @@ function ProtectedRoute({ children }: { children: ReactNode }) {
 
   if (loading) return <FullPageLoader label="Loading Taskflow…" />;
   if (!user) return <Navigate to="/login" replace />;
+  if (!user.emailVerified) return <Navigate to="/verify-email" replace />;
 
   return children;
 }
@@ -30,6 +34,9 @@ export default function App() {
     <Routes>
       <Route path="/login" element={<AuthPage mode="login" />} />
       <Route path="/register" element={<AuthPage mode="register" />} />
+      <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+      <Route path="/reset-password" element={<ResetPasswordPage />} />
+      <Route path="/verify-email" element={<VerifyEmailPage />} />
       <Route
         path="/"
         element={

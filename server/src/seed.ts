@@ -9,6 +9,7 @@ const existing = db
   .get(DEMO_EMAIL) as { id: string } | undefined;
 
 if (existing) {
+  db.prepare('UPDATE users SET email_verified = 1 WHERE id = ?').run(existing.id);
   console.log('Demo account already exists — nothing to do.');
   console.log(`  Email:    ${DEMO_EMAIL}`);
   console.log(`  Password: ${DEMO_PASSWORD}`);
@@ -121,7 +122,7 @@ const tasks = [
 
 db.transaction(() => {
   db.prepare(
-    'INSERT INTO users (id, name, email, password_hash, created_at) VALUES (?, ?, ?, ?, ?)',
+    'INSERT INTO users (id, name, email, password_hash, email_verified, created_at) VALUES (?, ?, ?, ?, 1, ?)',
   ).run(userId, 'Demo User', DEMO_EMAIL, passwordHash, iso(now));
 
   const insertProject = db.prepare(
