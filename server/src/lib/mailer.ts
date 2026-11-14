@@ -64,6 +64,46 @@ export async function verifyMailTransport(): Promise<{
 }
 
 /**
+ * Send one diagnostic message to Resend's simulated delivery inbox. Used by the
+ * temporary /api/health/mail/test endpoint; never sends to a real recipient.
+ */
+export async function sendDiagnosticMail(): Promise<{
+  ok: boolean;
+  messageId?: string;
+  code?: string;
+  responseCode?: number;
+  response?: string;
+}> {
+  try {
+    const info = await getTransporter().sendMail({
+      from: config.smtp.from,
+      to: 'delivered@resend.dev',
+      subject: 'Taskflow SMTP diagnostic',
+      text: 'This is a diagnostic message from Taskflow. Resend accepted the message.',
+      html: '<p>This is a diagnostic message from Taskflow. Resend accepted the message.</p>',
+    });
+    console.log('[mail] diagnostic message accepted:', info.messageId);
+    return { ok: true, messageId: info.messageId };
+  } catch (error) {
+    const failure = error as {
+      code?: string;
+      response?: string;
+      responseCode?: number;
+    };
+    console.error(
+      `[mail] diagnostic send failed: code=${failure.code ?? '?'} ` +
+        `responseCode=${failure.responseCode ?? '?'} response=${failure.response ?? '?'}`,
+    );
+    return {
+      ok: false,
+      code: failure.code,
+      responseCode: failure.responseCode,
+      response: failure.response,
+    };
+  }
+}
+
+/**
  * Send an email through SMTP when configured. Without SMTP (local development)
  * the message is printed to the server console so every flow stays testable.
  */

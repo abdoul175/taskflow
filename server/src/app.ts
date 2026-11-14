@@ -8,7 +8,7 @@ import { checkOrigin } from './middleware/origin.js';
 import { authRouter } from './routes/auth.js';
 import { projectsRouter } from './routes/projects.js';
 import { tasksRouter } from './routes/tasks.js';
-import { verifyMailTransport } from './lib/mailer.js';
+import { verifyMailTransport, sendDiagnosticMail } from './lib/mailer.js';
 
 const app = express();
 
@@ -44,6 +44,23 @@ app.get('/api/health/mail', async (_req, res) => {
   lastMailCheck = Date.now();
   const result = await verifyMailTransport();
   res.json({ configured: true, ...result });
+});
+
+// Temporary diagnostic: sends one message to Resend's test inbox. Fixed
+// recipient, no user input, so it cannot be used as a relay.
+let lastMailTest = 0;
+app.post('/api/health/mail/test', async (_req, res) => {
+  if (emailPreviewMode) {
+    res.status(400).json({ configured: false, reason: 'SMTP_HOST is not set' });
+    return;
+  }
+  if (Date.now() - lastMailTest < 60_000) {
+    res.status(429).json({ error: 'Try again in a minute.' });
+    return;
+  }
+  lastMailTest = Date.now();
+  const result = await sendDiagnosticMail();
+  res.status(result.ok ? 200 : 502).json(result);
 });
 
 app.use('/api/auth', authRouter);
