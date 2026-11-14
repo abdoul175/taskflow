@@ -3,12 +3,11 @@ import path from 'node:path';
 import express, { type ErrorRequestHandler } from 'express';
 import helmet from 'helmet';
 import cookieParser from 'cookie-parser';
-import { config, emailPreviewMode } from './config.js';
+import { config } from './config.js';
 import { checkOrigin } from './middleware/origin.js';
 import { authRouter } from './routes/auth.js';
 import { projectsRouter } from './routes/projects.js';
 import { tasksRouter } from './routes/tasks.js';
-import { verifyMailTransport, sendDiagnosticMail } from './lib/mailer.js';
 
 const app = express();
 
@@ -27,40 +26,6 @@ app.use('/api', checkOrigin);
 
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', uptime: Math.round(process.uptime()) });
-});
-
-// Temporary diagnostic: reports whether SMTP is configured and whether Resend
-// accepts the credentials. It never sends an email and never exposes secrets.
-let lastMailCheck = 0;
-app.get('/api/health/mail', async (_req, res) => {
-  if (emailPreviewMode) {
-    res.json({ configured: false, ok: false, reason: 'SMTP_HOST is not set' });
-    return;
-  }
-  if (Date.now() - lastMailCheck < 10_000) {
-    res.status(429).json({ error: 'Try again in a few seconds.' });
-    return;
-  }
-  lastMailCheck = Date.now();
-  const result = await verifyMailTransport();
-  res.json({ configured: true, ...result });
-});
-
-// Temporary diagnostic: sends one message to Resend's test inbox. Fixed
-// recipient, no user input, so it cannot be used as a relay.
-let lastMailTest = 0;
-app.post('/api/health/mail/test', async (_req, res) => {
-  if (emailPreviewMode) {
-    res.status(400).json({ configured: false, reason: 'SMTP_HOST is not set' });
-    return;
-  }
-  if (Date.now() - lastMailTest < 60_000) {
-    res.status(429).json({ error: 'Try again in a minute.' });
-    return;
-  }
-  lastMailTest = Date.now();
-  const result = await sendDiagnosticMail();
-  res.status(result.ok ? 200 : 502).json(result);
 });
 
 app.use('/api/auth', authRouter);
