@@ -27,8 +27,40 @@ function getTransporter(): Transporter {
     auth: config.smtp.user
       ? { user: config.smtp.user, pass: config.smtp.pass }
       : undefined,
+    // Keep a failed SMTP attempt from hanging the Vercel function.
+    connectionTimeout: 10_000,
+    greetingTimeout: 10_000,
+    socketTimeout: 15_000,
   });
   return transporter;
+}
+
+/**
+ * Check the configured SMTP credentials without sending a message. Used by the
+ * temporary /api/health/mail diagnostic endpoint.
+ */
+export async function verifyMailTransport(): Promise<{
+  ok: boolean;
+  code?: string;
+  responseCode?: number;
+  response?: string;
+}> {
+  try {
+    await getTransporter().verify();
+    return { ok: true };
+  } catch (error) {
+    const failure = error as {
+      code?: string;
+      response?: string;
+      responseCode?: number;
+    };
+    return {
+      ok: false,
+      code: failure.code,
+      responseCode: failure.responseCode,
+      response: failure.response,
+    };
+  }
 }
 
 /**
