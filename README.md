@@ -22,6 +22,7 @@ A full-stack task manager with email/password authentication. Built with a React
 | Database | SQLite via `better-sqlite3`                        |
 | Auth     | `scrypt` password hashing + opaque session cookies |
 | Icons    | `lucide-react`                                     |
+| Font     | Plus Jakarta Sans, bundled locally via Fontsource  |
 
 ## Quick start
 
